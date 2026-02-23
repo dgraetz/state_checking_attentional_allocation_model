@@ -1,0 +1,317 @@
+---
+title: "Developing an equation"
+output: html_document
+date: "2026-01-31"
+---
+
+```{r}
+library(tidyverse)
+library(rio)
+library(expm)
+options(scipen = 99)
+```
+
+```{r}
+state_after_n_trans <- function(p_A2B, 
+                                p_B2A,
+                                p_initial_A = 0, 
+                                p_initial_B = 1,
+                                n) {
+  
+  p_initial_B <- 1- p_initial_A
+  p_A2A <- 1-p_A2B
+  p_B2B <- 1-p_B2A
+  
+  #really nice set of videos: https://www.youtube.com/watch?v=IYaOMor9qvE
+  #initial state matrix: p(inital state being on), p(inital state being off)
+  initial_state <- matrix(c(p_initial_A, p_initial_B), nrow = 1)
+  
+  
+  
+  #transition matrix: upper left: p(remaining in on state), upper right: p(from on to off)
+  #                   lower left: p(remaining off to on), lower right: p(remaining in off state)
+  transition <- matrix(c(p_A2A, p_A2B,
+                         p_B2A, p_B2B), nrow = 2, byrow = TRUE)
+  
+  
+  initial_state %*% (transition %^% n) %>% 
+    as.data.frame() %>%
+    rename(p_state_A = V1, p_state_B = V2) %>%
+    return()
+  
+}
+```
+
+# How does the implied run length change the probability of on/off states?
+
+
+```{r}
+states <- data.frame(cr = seq(0.01, 1, by = 0.01)) %>%
+  rowwise() %>%
+  mutate(implied_run_length = 1/cr,
+         p_state_A = state_after_n_trans(p_A2B = 0.1,
+                                         p_B2A = 0.1, 
+                                         p_initial_A = 0,
+                                         n = implied_run_length)$p_state_A,
+         p_state_B = state_after_n_trans(p_A2B = 0.1,
+                                         p_B2A = 0.1, 
+                                         p_initial_A = 0, 
+                                         n = implied_run_length)$p_state_B)
+
+
+
+
+
+
+ggplot(states, aes(x = implied_run_length))+
+  geom_line(aes(y = p_state_A), color = "green")+
+  geom_line(aes(y = p_state_B), color = "red")+
+  labs(y = "p")+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+```
+
+
+## Approach:
+
+1. Build a dataframe that lists all the run lengths implied by the check rate
+1. calculate the rewards over this time, 
+
+```{r}
+
+states_int <- data.frame(run_length= seq(1, 100, 1)) %>%
+  rowwise() %>%
+  mutate(implied_cr = 1/run_length,
+         trial = list(1:run_length),
+         p_go_on = 0.1,
+         p_go_off = 0.1,
+         Win_A = 1,
+         Loss_B = 10,
+         RT_nc = 0.6,
+         RT_c = 1.7,
+         ITI = 0.2) %>%
+  unnest(trial) %>%
+  rowwise() %>%
+  mutate(p_state_A = state_after_n_trans(p_A2B = p_go_on,
+                                         p_B2A = p_go_off, 
+                                         p_initial_A = 0, 
+                                         n = trial)$p_state_A,
+         p_state_B = state_after_n_trans(p_A2B = p_go_on,
+                                         p_B2A = p_go_off, 
+                                         p_initial_A = 0, 
+                                         n = trial)$p_state_B) %>%
+  group_by(run_length) %>%
+  mutate(p_missed = lead(p_state_A * p_go_off),
+         p_missed = ifelse(is.na(p_missed), 0, p_missed),
+         Win_A_cum = cumsum(Win_A),
+         Loss_B_cum = cumsum(Loss_B*p_missed),
+         RT_cum = cumsum(RT_nc))
+  
+
+
+states_final <- states_int %>%
+  group_by(run_length) %>%
+  slice(n()) %>%
+  mutate(final_time = RT_cum + RT_c - RT_nc,
+         Reward_final_per_s = (Win_A_cum - Loss_B_cum)/final_time) %>%
+  ungroup() %>%
+  mutate(rel_reward = Reward_final_per_s/max(Reward_final_per_s))
+
+
+ggplot(states_final, aes(x = implied_cr, y = rel_reward))+
+  geom_line()+
+  theme_classic()+
+  coord_fixed(xlim = c(0, 1), ylim = c(0, 1))
+
+```
+
+
+# markov interpolation
+
+What we really need is a continuous interpolation of the markov chain model. Normally, the way discrete markov chains are calculated for each run of length n is like so:
+
+
+$$\pi_{n} = \pi_{0} P^n$$
+wherein $\pi_{n} = $ [initial state vector],
+$P =$ is the [transition matrix].
+
+The initial state vector looks like so:
+
+$$ \pi_{0} = \begin{bmatrix}
+P_{A} & P_{B} \end{bmatrix} $$
+
+The transition matrix contains probabilities of transitions to the different states (state A to A, A to B, B to A, and B to B)
+
+$$ P = \begin{bmatrix}
+P_{A to A} & P_{A to B} \\
+P_{B to A} & P_{B to B}
+\end{bmatrix} $$
+
+
+However, n has to be a discrete number in this equation. We are trying to derive the probabilities at run lengths that are not necessarily discrete. While the states can only switch at discrete trials, we want to approximate the function even for non-discrete trials  (e. g., when the result of $1/check rate$ is not a discrete number (e. g., when check rate is 0.75)). A trick to use continuous numbers in this equation is to do the following:
+
+Decompose the matrix: Find the eigenvalues and the eigenvector of the transition matrix. You can exponentiate the eigen values of a matrix with a continuous number, and then rebuild the original matrix. 
+
+$$M = V\Lambda V^{-1}$$
+
+Wherein $V$ are the eigenvectors,
+$\Lambda$ is the diagonal matrix with the eigenvalues, and
+$V^{-1}$ is the inverse of the eigenvector matrix. 
+
+You can then exponentiate $\Lambda$.
+
+Therefore, this can be re-written as:
+
+$$\pi_{n} = \pi_{0} P^n = \pi_{0} V\Lambda^n V^{-1}$$
+
+
+
+```{r}
+
+state_after_n_trans_cont <- function(p_A2B, 
+                          p_B2A, 
+                          p_initial_A = 0, 
+                          n) {
+  
+  p_initial_B <- 1- p_initial_A
+  p_A2A <- 1-p_A2B
+  p_B2B <- 1-p_B2A
+  
+  #transition matrix: upper left: p(remaining in on state), upper right: p(from on to off)
+  #                   lower left: p(remaining off to on), lower right: p(remaining in off state)
+  P <- matrix(c(p_A2A, p_A2B,
+                p_B2A, p_B2B), nrow = 2, byrow = TRUE)
+  
+  #decompose into V, Lambda and V-1
+  decomp <- eigen(P)
+  V <- decomp$vectors
+  L <- diag(decomp$values) # The eigenvalues are 1 and (1 - p_A2B - p_B2A)
+  V_inv <- solve(V)
+  
+  # exponentiate the Eigenvalues
+  # We only raise the diagonal elements to the power of n
+  L_n <- L^n
+  
+  # calculate the updated "transition matrix"
+  P_n <- V %*% L_n %*% V_inv
+  
+  #same math as before
+  initial_state <- matrix(c(p_initial_A, p_initial_B), nrow = 1)
+  
+  initial_state %*% P_n %>% 
+    as.data.frame() %>%
+    rename(p_state_A = V1, p_state_B = V2) %>%
+    return()
+  
+}
+
+
+states <- data.frame(cr = seq(0.01, 1, by = 0.01)) %>%
+  mutate(implied_run_length = 1/cr,
+         p_A2B = 0.1, 
+         p_B2A = 0.1,
+         p_initial_A = 0) %>%
+  rowwise() %>%
+  mutate(p_state_A = state_after_n_trans(p_A2B = p_A2B,
+                                         p_B2A = p_B2A,
+                                         p_initial_A = p_initial_A, 
+                                         n = implied_run_length)$p_state_A,
+         p_state_B = state_after_n_trans(p_A2B = p_A2B,
+                                         p_B2A = p_B2A,
+                                         p_initial_A = p_initial_A, 
+                                         n = implied_run_length)$p_state_B,
+         
+         p_state_A_cont = state_after_n_trans_cont(p_A2B = p_A2B,
+                                                   p_B2A = p_B2A,
+                                                   p_initial_A = p_initial_A, 
+                                                   n = implied_run_length)$p_state_A,
+         p_state_B_cont = state_after_n_trans_cont(p_A2B = p_A2B,
+                                                   p_B2A = p_B2A,
+                                                   p_initial_A = p_initial_A, 
+                                                   n = implied_run_length)$p_state_B)
+
+
+
+
+
+
+ggplot(states, aes(x = implied_run_length))+
+  geom_line(aes(y = p_state_A), color = "green")+
+  geom_line(aes(y = p_state_B), color = "red")+
+  geom_line(aes(y = p_state_A_cont), color = "green", linetype = "dashed")+
+  geom_line(aes(y = p_state_B_cont), color = "red", linetype = "dashed")+
+  labs(y = "p")+
+  coord_cartesian(xlim = c(0, 25), ylim = c(0,1))+
+  theme_classic()
+
+
+```
+
+Now that we have the formula for determining the probability that the state is on, we can also calculate the probability that we the state turns off in any given run length, which is just the probability that the state is currently off multiplied by the probability that it turns off.
+
+$$p_{just turns off} = p_{State=ON_N} * p_{turn off}$$
+
+```{r}
+
+states <- states %>%
+  mutate(p_turns_off = p_state_A_cont * p_A2B,
+         p_missed = p_turns_off * (1-cr))
+
+
+ggplot(states, aes(x = implied_run_length))+
+  geom_line(aes(y = p_state_A_cont), color = "green", linetype = "dashed")+
+  geom_line(aes(y = p_turns_off), color = "orange", linetype = "dashed")+
+  geom_line(aes(y = p_missed), color = "red", linetype = "dashed")+
+  labs(y = "p")+
+  coord_cartesian(xlim = c(0, 25), ylim = c(0,1))+
+  theme_classic()
+
+```
+
+
+
+```{r}
+
+states2 <- data.frame(run_length = seq(1, 25, by = 0.01)) %>%
+  mutate(implied_cr = 1/run_length,
+         p_A2B = 0.1, 
+         p_B2A = 0.1,
+         p_initial_A = 0) %>%
+  rowwise() %>%
+  mutate(p_state_A = state_after_n_trans(p_A2B = p_A2B,
+                                         p_B2A = p_B2A,
+                                         p_initial_A = p_initial_A, 
+                                         n = run_length)$p_state_A,
+         p_state_B = state_after_n_trans(p_A2B = p_A2B,
+                                         p_B2A = p_B2A,
+                                         p_initial_A = p_initial_A, 
+                                         n = run_length)$p_state_B,
+         
+         p_state_A_cont = state_after_n_trans_cont(p_A2B = p_A2B,
+                                                   p_B2A = p_B2A,
+                                                   p_initial_A = p_initial_A, 
+                                                   n = run_length)$p_state_A,
+         p_state_B_cont = state_after_n_trans_cont(p_A2B = p_A2B,
+                                                   p_B2A = p_B2A,
+                                                   p_initial_A = p_initial_A, 
+                                                   n = run_length)$p_state_B)
+
+
+
+
+ggplot(data = states2, aes(x = run_length))+
+  geom_line(aes(y = p_state_A_cont), color = "green")+
+  geom_line(aes(y = p_state_A_cont * p_A2B), color = "orange")+
+  geom_line(aes(y = p_state_A_cont * p_A2B * (1 - 0.8)), color = "red")+
+  geom_line(aes(y = p_state_A_cont))+
+  labs(y = "p")+
+  coord_cartesian(xlim = c(0, 25), ylim = c(0,1))+
+  theme_classic()
+
+
+```
+
+
+
+

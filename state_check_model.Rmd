@@ -1,0 +1,566 @@
+---
+title: "State Checking Task - Developing a Normative Model"
+output: html_document
+date: "2026-02-23"
+---
+
+
+```{r}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(rio)
+library(expm)
+options(scipen = 99)
+```
+
+
+# Defining the markov process
+
+First, we need to find the probability that you're in a given state at run length $r$. We can understand the stochastic turning on/off as a markov process with defined probabilities. We can then calculate the state at any given trial. This can be done by multiplying the initial state vector (probabilities for starting in state A or B) with the transition matrix. 
+
+
+$$\pi_{r} = \pi_{0} P^r$$
+wherein $\pi_{0} =$ [initial state vector],
+$P =$ is the [transition matrix].
+
+The initial state vector looks like so:
+
+$$ \pi_{0} = \begin{bmatrix}
+P_{A} & P_{B} \end{bmatrix} $$
+
+The transition matrix contains probabilities of transitions to the different states (state A to A, A to B, B to A, and B to B)
+
+$$ P = \begin{bmatrix}
+P_{A to A} & P_{A to B} \\
+P_{B to A} & P_{B to B}
+\end{bmatrix} $$
+
+
+
+```{r}
+state_after_n_trans <- function(p_A2B, 
+                                p_B2A,
+                                p_initial_A = 1, 
+                                n) {
+  
+  p_initial_B <- 1- p_initial_A
+  p_A2A <- 1-p_A2B
+  p_B2B <- 1-p_B2A
+  
+  #really nice set of videos: https://www.youtube.com/watch?v=IYaOMor9qvE
+  #initial state matrix: p(inital state being on), p(inital state being off)
+  initial_state <- matrix(c(p_initial_A, p_initial_B), nrow = 1)
+  
+  
+  
+  #transition matrix: upper left: p(remaining in on state), upper right: p(from on to off)
+  #                   lower left: p(remaining off to on), lower right: p(remaining in off state)
+  transition <- matrix(c(p_A2A, p_A2B,
+                         p_B2A, p_B2B), nrow = 2, byrow = TRUE)
+  
+  
+  initial_state %*% (transition %^% n) %>% 
+    as.data.frame() %>%
+    rename(p_state_A = V1, p_state_B = V2) %>%
+    return()
+  
+}
+```
+
+
+Let's say A is the on state, B is the off state. If we always start a trial with the off state, this is what the matrices look like:
+
+$$ \pi_{0} = \begin{bmatrix}
+P_{A} & P_{B} \end{bmatrix} = 
+\begin{bmatrix}
+0 & 1 \end{bmatrix} $$
+
+
+Let's assume that $P_{A to B} = 0.1$ and $P_{B to A} = 0.1$. We can generate the transition matrix as follows:
+
+$$ P = \begin{bmatrix}
+P_{A to A} & P_{A to B} \\
+P_{B to A} & P_{B to B}
+\end{bmatrix} = 
+\begin{bmatrix}
+0.9 & 0.1 \\
+0.1 & 0.9
+\end{bmatrix} $$
+
+Therefore, 
+
+$$ \pi_r = \begin{bmatrix}
+0 & 1 \end{bmatrix} \begin{bmatrix}
+0.9 & 0.1 \\
+0.1 & 0.9
+\end{bmatrix}^r$$
+
+
+So let's look at what happens with the probabilities of being in each state for any run length.
+
+```{r}
+states <- data.frame(trial = 0:1000) %>%
+  mutate(p_A2B = 0.1,
+         p_B2A = 0.1,
+         p_initial_A = 0,
+         Win = 1,
+         Loss = 10,
+         RT_nc = 1,
+         RT_c = 1.5,
+         ITI = 0.1) %>%
+  rowwise() %>%
+  mutate(p_state_A = state_after_n_trans(p_A2B = p_A2B,
+                                         p_B2A = p_B2A,
+                                         p_initial_A = p_initial_A,
+                                         n = trial)$p_state_A,
+         p_state_B = state_after_n_trans(p_A2B = p_A2B,
+                                         p_B2A = p_B2A,
+                                         p_initial_A = p_initial_A, 
+                                         n = trial)$p_state_B)
+
+
+
+
+
+
+ggplot(states %>% filter(trial <= 10), aes(x = trial))+
+  geom_point(aes(y = p_state_A, color = "A"))+
+  geom_line(aes(y = p_state_A, color = "A"))+
+  geom_point(aes(y = p_state_B, color = "B"))+
+  geom_line(aes(y = p_state_B, color = "B"))+
+  scale_color_manual(name = "State",
+                     values = c("A" = "red",
+                                "B" = "blue"))+
+  scale_x_continuous(breaks = unique(states$trial))+
+  labs(y = "p")+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+```
+
+# Get the probability of misses
+
+So now how can we figure out what the probability is for each trial that would consitute a Miss event? Because markov chains give the probabilities for each state per trial, we simply have to multiply the probability of being in an on state in the previous trial by the probability of transitions, i. e.,  by the probability of transitioning back to the Off state. The miss is calculated on the next trial. If 0 is the start trial, at trial 1 the probabilities of being in either state have changed, but only if I didn't check in a given trial and the state changes from A to B, I have missed it. 
+
+
+$$ P_\text{r miss} = \pi_{r-1}*P_{A2B}$$
+
+```{r}
+states <- states %>%
+  ungroup() %>%
+  mutate(p_back2B = p_state_A * p_A2B,
+         p_back2B = lag(p_back2B, default = 0))
+
+ggplot(states %>% filter(trial <= 10), aes(x = trial))+
+  geom_point(aes(y = p_state_A, color = "A"))+
+  geom_line(aes(y = p_state_A, color = "A", linetype = "A"))+
+  geom_point(aes(y = p_state_B, color = "B"))+
+  geom_line(aes(y = p_state_B, color = "B", linetype = "B"))+
+  
+  
+  geom_point(aes(y = p_back2B, color = "back2B"))+
+  geom_line(aes(y = p_back2B, color = "back2B", linetype = "back2B"))+
+  
+  scale_color_manual(name = "State",
+                     values = c("A" = "red",
+                                "back2B" = "red",
+                                "B" = "blue"),
+                     labels = c("back2B" = "missed A state"))+
+  scale_linetype_manual(name = "State",
+                     values = c("A" = "solid",
+                                "back2B" = "dotted",
+                                "B" = "solid"),
+                     labels = c("back2B" = "missed A state"))+
+  labs(y = "p")+
+  scale_x_continuous(breaks = unique(states$trial))+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+```
+
+# Obtaining rewards
+
+Therefore, we can get the payout for each trial of a run length by adding the guaranteed gains (assuming 100 % accuracy in a simple task) and subtracting the losses, weighted by the probability of missing the on state. 
+
+
+$$ PONC_n = g - (p_{miss} * l) $$
+
+```{r}
+states <- states %>%
+  mutate(inst_rew = Win,
+         inst_rew = replace(inst_rew, trial == 0, 0),
+         rew_cum = cumsum(inst_rew),
+         inst_loss = p_back2B * Loss,
+         inst_loss = replace(inst_loss, trial == 0, 0),
+         loss_cum = cumsum(inst_loss))
+```
+
+If I check on the last trial of a run, we get the following (no penalty on the last trial because I checked).
+
+$$ APOC_n =  \frac{1}{r} \sum_{n=1}^{r-1}{PONC_n} + g $$
+
+
+
+
+However, if I didn't check, then the average payout for a run length $r$ is
+
+$$APONC_r = \frac{1}{r} \sum_{n=1}^{r}{PONC_n} $$
+
+```{r}
+states <- states %>%
+  mutate(APOC = (rew_cum - loss_cum + inst_loss) / trial,
+         APONC = (rew_cum - loss_cum)/trial) # + inst_loss because we avoided the current loss
+```
+
+Let's get the multiplier:
+
+$$CC_r = \frac{RT + ITI + \frac{CT}{r}}{RT + ITI}$$
+
+```{r}
+states <- states %>% 
+  mutate(CC = (RT_nc + ((RT_c - RT_nc)/trial) + ITI)/(RT_nc + ITI))
+```
+
+
+Adjusting the check with the relative cost of checking yields:
+
+$$APOCTA_r = \frac{APOC}{CC_r}$$
+
+```{r}
+states <- states %>%
+  mutate(APOCTA = APOC/CC)
+```
+
+
+Therefore, the payoff for not checking is 
+
+$$ PNCC_r = APONC_r - APOCTA_r $$
+The policy for checking is:
+$$ \text{if } PNCC_r<0: \text{cue fixation} $$
+```{r}
+states <- states %>%
+  mutate(PNCC = APONC - APOCTA,
+         should_check = ifelse(PNCC < 0, 1, 0),
+         is_first_check = ifelse(lag(PNCC >=0) & PNCC < 0, 1, 0))
+
+
+ggplot(states %>% filter(trial <= 10), aes(x = trial))+
+  geom_point(aes(y = APOCTA, color = "APOCTA"))+
+  geom_line(aes(y = APOCTA, color = "APOCTA"))+
+  geom_line(aes(y = APONC, color = "APONC"))+
+  geom_point(aes(y = APONC, color = "APONC"))+
+  geom_point(aes(y = PNCC, color = "PNCC"))+
+  geom_line(aes(y = PNCC, color = "PNCC"))+
+  geom_point(data = states %>% filter(is_first_check == 1), aes(y = APONC), color = "black")+
+  geom_hline(aes(yintercept = 0))+
+  scale_color_manual(values = c("APOCTA" = "green",
+                                "APONC" = "red",
+                                "PNCC" = "blue"))+
+  scale_x_continuous(breaks = unique(states$trial))+
+  labs(y = "")+
+  theme_classic()
+
+ggplot(states %>% filter(trial <= 10), aes(x = 1/trial))+
+  geom_point(aes(y = APOCTA, color = "APOCTA"))+
+  geom_line(aes(y = APOCTA, color = "APOCTA"))+
+  geom_line(aes(y = APONC, color = "APONC"))+
+  geom_point(aes(y = APONC, color = "APONC"))+
+  geom_point(aes(y = PNCC, color = "PNCC"))+
+  geom_line(aes(y = PNCC, color = "PNCC"))+
+  geom_point(data = states %>% filter(is_first_check == 1), aes(y = APONC), color = "black")+
+  geom_hline(aes(yintercept = 0))+
+  scale_color_manual(values = c("APOCTA" = "green",
+                                "APONC" = "red",
+                                "PNCC" = "blue"))+
+  #scale_x_continuous(breaks = unique(states$trial))+
+  labs(y = "")+
+  theme_classic()
+```
+
+
+# Developing a function, and plot it
+
+```{r}
+monster <- function(p_A2B = 0.1,
+                    p_B2A = 0.1,
+                    p_initial_A = 0,
+                    Win = 1,
+                    Loss = 10,
+                    RT_nc = 1,
+                    RT_c = 1.5,
+                    ITI = 0.1, TTime = 90){
+  
+  #for debugging
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # p_initial_A = 0
+  # Win = 1
+  # Loss = 5
+  # RT_nc = 1
+  # RT_c = 1.5
+  # ITI = 0.1
+  # TTime = 90
+  
+  
+  probs <- seq(0.01, 1, 0.01)
+  
+  #possible run lengths
+  r <- 1:1000
+  
+  #calculate A state using the markov states
+  inst_p_A <- lapply(r, function(x){
+    state_after_n_trans(p_A2B = p_A2B, p_B2A = p_B2A, p_initial_A = p_initial_A, n = x)$p_state_A
+  }) %>% unlist()
+  
+  #the probability of a current trial miss is taking the prob of last trial state A times the probability that it switches back to B
+  p_missed <- lag(inst_p_A, 1, default = p_initial_A) * p_A2B
+  
+  #multiplied by loss amount yields the proportional estimated loss
+  p_missed_loss <- p_missed * Loss
+  
+  
+  # ggplot(data = NULL, aes(x = r))+
+  #   geom_line(aes(y = p_missed))
+  # 
+  # ggplot(data = NULL, aes(x = r))+
+  #   geom_line(aes(y = inst_p_A))
+  
+  
+  payoff_per_trial <- Win - p_missed_loss #this is for each checked trial
+  
+  avg_payoff_by_r <- (cumsum(payoff_per_trial) + p_missed_loss) / r # + p_missed_loss because in the current trial, if the state turned off, we didn't miss it. So we add the loss amount back
+  
+  earnings <- numeric(length(probs))
+  for (i in seq_along(probs)) {
+    
+    p <- probs[i]
+    w <- p * (1 - p)^(r - 1)
+    w <- w / sum(w)
+    avg_payoff_p <- sum(w * avg_payoff_by_r)
+    
+    denom_with_p <- TTime / (RT_nc + ITI + p * (RT_c - RT_nc))
+    earnings[i] <- avg_payoff_p * denom_with_p
+  }
+  
+  list(
+    earnings       = earnings,
+    probabilities  = probs
+  )
+  
+  
+}
+
+
+monster(p_A2B = states$p_A2B[1],
+        p_B2A = states$p_B2A[1],
+        p_initial_A = states$p_initial_A[1],
+        RT_nc = states$RT_nc[1],
+        RT_c = states$RT_c[1], 
+        ITI = states$ITI[1], 
+        Win = states$Win[1], 
+        Loss = states$Loss[1], 
+        TTime = 90) %>% 
+  as.data.frame() %>%
+  ggplot(aes(x= probabilities, y = earnings))+
+  geom_line()+
+  labs(title = "optimal behavior at the beginning of the block")+
+  theme_classic()
+
+
+
+
+```
+
+The model above makes the prediction for the very first check that happens, because we set the initial probability of a State A to 0. In the middle of the block, however, the steady state probabilities are probably more relevant. We can get the steady state probability of a markov chain by looking at the states at trial 1000 or so, i. e.,
+
+$$\pi_{r} = \pi_{0} P^{1000}$$
+or by doing the following 
+
+$$\pi_\text{steady state(A)} = \frac{P_{B2A}}{P_{A2B} + P_{B2A}}$$
+
+This looks very different. 
+
+```{r}
+
+
+monster(p_A2B = states$p_A2B[1],
+        p_B2A = states$p_B2A[1],
+        p_initial_A = states$p_B2A[1]/(states$p_A2B[1] + states$p_B2A[1]),
+        RT_nc = states$RT_nc[1],
+        RT_c = states$RT_c[1], 
+        ITI = states$ITI[1], 
+        Win = states$Win[1], 
+        Loss = states$Loss[1], 
+        TTime = 90) %>% 
+  as.data.frame() %>%
+  ggplot(aes(x= probabilities, y = earnings))+
+  geom_line()+
+  labs(title = "optimal behavior in the middle of the block")+
+  theme_classic()
+
+
+```
+
+What we probably need is a model that recursively gets the state probabilities for each run length. 
+
+
+Let's look at how the optimality curve changes dependent on the trial at which you start your run. Red is the steady state. To understand this better, let's think of each trial as a decision point at which you're deciding on the length of your next run. If you decide on the first trial of the block, you know that the probability for state A was 0, and the probability for state B is 1. Now, you get to the trial number at which you want to check based on your run length. The participant then of course knows which state is active, and decides on the run length. To not right now use a simulation model, we should use as the probabilistic initial state (according to the markov state) to determine the optimal run length. Thus, the curve will change. 
+
+Now this figure shows how the optimality curve adapts over time. It eventually converges onto an optimality landscape that uses the steady states as inputs.
+
+```{r}
+runs <- data.frame(trial = c(1:10, 1000),
+                   p_A2B = states$p_A2B[1],
+                   p_B2A = states$p_B2A[1],
+                   RT_nc = states$RT_nc[1],
+                   RT_c = states$RT_c[1], 
+                   ITI = states$ITI[1], 
+                   Win = states$Win[1], 
+                   Loss = states$Loss[1]) %>%
+  rowwise() %>%
+  mutate(p_initial_A = state_after_n_trans(p_A2B = p_A2B, 
+                                           p_B2A = p_B2A, 
+                                           p_initial_A = 0,
+                                           n = trial)$p_state_A) %>%
+  mutate(out = list(monster(p_A2B = p_A2B, 
+                            p_B2A = p_B2A, 
+                            p_initial_A = p_initial_A, 
+                            Loss = Loss, 
+                            RT_nc = RT_nc, 
+                            RT_c = RT_c, 
+                            ITI = ITI) %>% as.data.frame())) %>%
+  unnest(out) %>%
+  group_by(trial) %>%
+  mutate(is_max = ifelse(earnings == max(earnings), 1, 0))
+ 
+
+
+calc_method_plt <- ggplot(runs %>% filter(trial != 1000), aes(x = probabilities, y = earnings, color = trial, group = trial))+
+  geom_line()+
+  geom_point(data = runs %>% filter(is_max == 1), color = "black", pch = 23)+
+  geom_line(data = runs %>% filter(trial == 1000), color = "red", linetype = "dashed")+
+  scale_color_viridis_c(end = 0.9, name = "Start trial of run")+
+  labs(title = "Optimality curves as a function of trial at which run started",
+       subtitle = "red: steady state\n\nmethod: calculating curves with function separately,\nwith inital state from markov state at given trial\n")+
+  
+  theme_classic()
+```
+
+
+Sure, but the observer KNOWS what the state is at the cue check. Yes, they do, but I think that the modeling approach where you calculate the optimality curve after you completed a run considering the current markov state and use that as inputs, does account for that. Indeed, we can rebuild the graph above by multiplying the curves optimality curves when you KNOW that state is A or B BY their probability according to the markov process. 
+
+
+```{r}
+
+initA0 <- monster(p_A2B = states$p_A2B[1],
+                 p_B2A = states$p_B2A[1],
+                 RT_nc = states$RT_nc[1],
+                 RT_c = states$RT_c[1], 
+                 ITI = states$ITI[1], 
+                 Win = states$Win[1], 
+                 Loss = states$Loss[1], 
+                 p_initial_A = 0)  %>% 
+  as.data.frame() %>%
+  rename(probabilities0 = probabilities,
+         earnings0 = earnings)
+
+plt_initA0 <- ggplot(initA0, aes(x = probabilities0, y = earnings0))+
+  geom_line()+
+  labs(title = "if state was OFF at start of run",
+       x = "check rate",
+       y = "earnings")+
+  theme_classic()
+   
+  
+
+initA1 <- monster(p_A2B = states$p_A2B[1],
+                 p_B2A = states$p_B2A[1],
+                 RT_nc = states$RT_nc[1],
+                 RT_c = states$RT_c[1], 
+                 ITI = states$ITI[1], 
+                 Win = states$Win[1], 
+                 Loss = states$Loss[1], 
+                 p_initial_A = 1) %>% 
+  as.data.frame()  %>%
+  rename(probabilities1 = probabilities,
+         earnings1 = earnings)
+
+plt_initA1 <- ggplot(initA1, aes(x = probabilities1, y = earnings1))+
+  geom_line()+
+  labs(title = "if state was ON at start of run",
+       x = "check rate",
+       y = "earnings")+
+  theme_classic()
+
+ggpubr::ggarrange(plt_initA0, plt_initA1)
+
+```
+
+
+Let's plot the markov states again, i. e., the weights of these functions.
+
+```{r, out.width="100%"}
+
+runs_weight <- data.frame(trial = c(1:10, 1000),
+                   p_A2B = states$p_A2B[1],
+                   p_B2A = states$p_B2A[1]) %>%
+  rowwise() %>%
+  mutate(p_A = state_after_n_trans(p_A2B = p_A2B, 
+                                   p_B2A = p_B2A, 
+                                   p_initial_A = 0,
+                                   n = trial)$p_state_A,
+         p_B = state_after_n_trans(p_A2B = p_A2B, 
+                                   p_B2A = p_B2A, 
+                                   p_initial_A = 0,
+                                   n = trial)$p_state_B)
+  
+
+ggplot(runs_weight %>% filter(trial < 50), aes(x = trial))+
+  geom_point(aes(y = p_A, color = "A"))+
+  geom_line(aes(y = p_A, color = "A"))+
+  geom_point(aes(y = p_B, color = "B"))+
+  geom_line(aes(y = p_B, color = "B"))+
+  scale_color_manual(name = "State",
+                     values = c("A" = "red",
+                                "B" = "blue"))+
+  scale_x_continuous(breaks = unique(runs_weight$trial))+
+  labs(y = "p = weight")+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+inits <- cbind(initA0, initA1)
+
+runs_weight <- runs_weight %>%
+  mutate(inits = list(inits)) %>%
+  unnest(inits) %>%
+  mutate(earnings_weighted = p_A*earnings1 + p_B*earnings0) %>%
+  group_by(trial) %>%
+  mutate(is_max = ifelse(earnings_weighted == max(earnings_weighted), 1, 0)) 
+
+
+
+weight_method_plt <- ggplot(runs_weight %>% filter(trial != 1000), aes(x = probabilities0, y = earnings_weighted, color = trial, group = trial))+
+  geom_line()+
+  geom_point(data = runs_weight %>% filter(is_max == 1), color = "black", pch = 23)+
+  geom_line(data = runs_weight %>% filter(trial == 1000), color = "red", linetype = "dashed")+
+  scale_color_viridis_c(end = 0.9, name = "Start trial of run")+
+  labs(title = "Optimality curves as a function of trial at which run started.",
+       subtitle = "red: steady state\n\nmethod: weighting functions from known\ninital state by their respective markov state\nprobability from check trial",
+       x = "check rate",
+       y = "earnings, weighting method")+
+  theme_classic()
+
+
+ggpubr::ggarrange(calc_method_plt, weight_method_plt, common.legend = T, legend = "bottom")
+
+```
+
+
+
+
+
+
