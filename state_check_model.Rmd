@@ -1,7 +1,16 @@
 ---
 title: "State Checking Task - Developing a Normative Model"
-output: html_document
-date: "2026-02-23"
+author:
+  - name: "Dominik Graetz"
+    affiliation: "University of Oregon"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true         # optional: adds a table of contents
+    toc_float: true
+    toc_depth: 6
+    number_sections: true
+date: "2026-02-24"
 ---
 
 
@@ -83,8 +92,8 @@ P_{A} & P_{B} \end{bmatrix} =
 Let's assume that $P_{A to B} = 0.1$ and $P_{B to A} = 0.1$. We can generate the transition matrix as follows:
 
 $$ P = \begin{bmatrix}
-P_{A to A} & P_{A to B} \\
-P_{B to A} & P_{B to B}
+P_{A \to A} & P_{A \to B} \\
+P_{B \to A} & P_{B \to B}
 \end{bmatrix} = 
 \begin{bmatrix}
 0.9 & 0.1 \\
@@ -171,10 +180,10 @@ ggplot(states %>% filter(trial <= 10), aes(x = trial))+
                                 "B" = "blue"),
                      labels = c("back2B" = "missed A state"))+
   scale_linetype_manual(name = "State",
-                     values = c("A" = "solid",
-                                "back2B" = "dotted",
-                                "B" = "solid"),
-                     labels = c("back2B" = "missed A state"))+
+                        values = c("A" = "solid",
+                                   "back2B" = "dotted",
+                                   "B" = "solid"),
+                        labels = c("back2B" = "missed A state"))+
   labs(y = "p")+
   scale_x_continuous(breaks = unique(states$trial))+
   coord_cartesian(ylim = c(0,1))+
@@ -436,7 +445,7 @@ runs <- data.frame(trial = c(1:10, 1000),
   unnest(out) %>%
   group_by(trial) %>%
   mutate(is_max = ifelse(earnings == max(earnings), 1, 0))
- 
+
 
 
 calc_method_plt <- ggplot(runs %>% filter(trial != 1000), aes(x = probabilities, y = earnings, color = trial, group = trial))+
@@ -457,13 +466,13 @@ Sure, but the observer KNOWS what the state is at the cue check. Yes, they do, b
 ```{r}
 
 initA0 <- monster(p_A2B = states$p_A2B[1],
-                 p_B2A = states$p_B2A[1],
-                 RT_nc = states$RT_nc[1],
-                 RT_c = states$RT_c[1], 
-                 ITI = states$ITI[1], 
-                 Win = states$Win[1], 
-                 Loss = states$Loss[1], 
-                 p_initial_A = 0)  %>% 
+                  p_B2A = states$p_B2A[1],
+                  RT_nc = states$RT_nc[1],
+                  RT_c = states$RT_c[1], 
+                  ITI = states$ITI[1], 
+                  Win = states$Win[1], 
+                  Loss = states$Loss[1], 
+                  p_initial_A = 0)  %>% 
   as.data.frame() %>%
   rename(probabilities0 = probabilities,
          earnings0 = earnings)
@@ -474,17 +483,17 @@ plt_initA0 <- ggplot(initA0, aes(x = probabilities0, y = earnings0))+
        x = "check rate",
        y = "earnings")+
   theme_classic()
-   
-  
+
+
 
 initA1 <- monster(p_A2B = states$p_A2B[1],
-                 p_B2A = states$p_B2A[1],
-                 RT_nc = states$RT_nc[1],
-                 RT_c = states$RT_c[1], 
-                 ITI = states$ITI[1], 
-                 Win = states$Win[1], 
-                 Loss = states$Loss[1], 
-                 p_initial_A = 1) %>% 
+                  p_B2A = states$p_B2A[1],
+                  RT_nc = states$RT_nc[1],
+                  RT_c = states$RT_c[1], 
+                  ITI = states$ITI[1], 
+                  Win = states$Win[1], 
+                  Loss = states$Loss[1], 
+                  p_initial_A = 1) %>% 
   as.data.frame()  %>%
   rename(probabilities1 = probabilities,
          earnings1 = earnings)
@@ -506,8 +515,8 @@ Let's plot the markov states again, i. e., the weights of these functions.
 ```{r, out.width="100%"}
 
 runs_weight <- data.frame(trial = c(1:10, 1000),
-                   p_A2B = states$p_A2B[1],
-                   p_B2A = states$p_B2A[1]) %>%
+                          p_A2B = states$p_A2B[1],
+                          p_B2A = states$p_B2A[1]) %>%
   rowwise() %>%
   mutate(p_A = state_after_n_trans(p_A2B = p_A2B, 
                                    p_B2A = p_B2A, 
@@ -517,7 +526,7 @@ runs_weight <- data.frame(trial = c(1:10, 1000),
                                    p_B2A = p_B2A, 
                                    p_initial_A = 0,
                                    n = trial)$p_state_B)
-  
+
 
 ggplot(runs_weight %>% filter(trial < 50), aes(x = trial))+
   geom_point(aes(y = p_A, color = "A"))+
@@ -563,4 +572,548 @@ ggpubr::ggarrange(calc_method_plt, weight_method_plt, common.legend = T, legend 
 
 
 
+# So actually, it's a three state markov process
+
+In reality, there are three states. The state is off, on, or on AND detected. The model before cannot distinguish between the latter two. So again, let's define the markov process. Here, the three states are: State off, state on, and state on, detected. The matrix overall looks similar - indeed, there is no transition possible INTO the detected state. The detected state becomes important only as an initial state. In other words, when you just checked, you're in the detected state. This essentially "steals" probability from the undetected A state, and better models the probability of a new, undetected A state coming on.
+
+
+$$ \pi_{0} = \begin{bmatrix}
+P_{\text {A}} & P_{\text {A detected}} & P_{\text{B}} \end{bmatrix} = 
+\begin{bmatrix}
+0 & 0 & 1 \end{bmatrix} $$
+
+
+Let's assume that $P_{A \to B} = 0.1$ and $P_{B \to A} = 0.1$. We can generate the transition matrix as follows:
+
+$$ P = \begin{bmatrix}
+P_{\text{A} \to \text{A}} & P_{\text{A} \to \text{A detected}} && P_{\text{A} \to \text{B}} \\
+P_{\text{A detected} \to \text{A}} & P_{\text{A detected} \to \text{A detected}} && P_{\text{A detected} \to \text{B}} \\
+P_{\text{B} \to \text{A}} & P_{\text{B} \to \text{A detected}} && P_{\text{B} \to \text{B}} \\
+\end{bmatrix} = \\
+\begin{bmatrix} \\
+0.9 & 0   & 0.1 \\
+0   & 0.9 & 0.1 \\
+0.1 & 0   & 0.9 \\
+\end{bmatrix} $$
+
+Therefore, 
+
+$$ \pi_r = \begin{bmatrix}
+0 & 0 & 1 \end{bmatrix}
+\begin{bmatrix}
+0.9 & 0   & 0.1 \\
+0   & 0.9 & 0.1 \\
+0.1 & 0   & 0.9
+\end{bmatrix}^r$$
+
+
+```{r}
+state3_after_n_trans <- function(p_A2B, 
+                                 p_B2A,
+                                 p_initial_B = 1, 
+                                 p_initial_A_detected = 0,
+                                 p_initial_A = 0,
+                                 n) {
+  
+  
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # p_initial_B = 1
+  # p_initial_A_detected = 0
+  # p_initial_A_undetected = 0
+  # n = 2
+  
+  p_A2A <- 1-p_A2B
+  p_B2B <- 1-p_B2A
+  
+  
+  #really nice set of videos: https://www.youtube.com/watch?v=IYaOMor9qvE
+  #initial state matrix: p(inital state being on), p(inital state being off)
+  initial_state <- matrix(c(p_initial_A, p_initial_A_detected, p_initial_B), nrow = 1)
+  
+  
+  
+  #transition matrix: 
+  #   TO A A_d B       
+  #FROM
+  #A
+  #A_d
+  #B
+  
+  transition <- matrix(c(p_A2A,     0, p_A2B,
+                         0    , p_A2A, p_A2B,
+                         p_B2A,     0, p_B2B), nrow = 3, byrow = TRUE)
+  
+  
+  initial_state %*% (transition %^% n) %>% 
+    as.data.frame() %>%
+    rename(p_state_A = V1, p_state_A_detected = V2, p_state_B = V3) %>%
+    return()
+  
+}
+```
+
+## Markov chain when you just detected an ON state
+
+Here, we start with an A/On state that we just detected. The green, detected state fades rapidly. The probability of transitioning into the OFF state rises fast, the probability of being in the A state is rising slower, due to the fact that you can't go from a detected A state to another undetected A state. So, from the current status to a pontial miss, it first needs to turn off, then on, then off again.
+
+```{r}
+states <- data.frame(trial = 0:1000) %>%
+  mutate(p_A2B = 0.1,
+         p_B2A = 0.1,
+         p_initial_A = 0,
+         p_initial_A_detected = 1,
+         p_initial_B = 0,
+         Win = 1,
+         Loss = 10,
+         RT_nc = 1,
+         RT_c = 1.5,
+         ITI = 0.1) %>%
+  rowwise() %>%
+  mutate(p_state_A = state3_after_n_trans(p_A2B = p_A2B,
+                                          p_B2A = p_B2A,
+                                          p_initial_A = p_initial_A, 
+                                          p_initial_A_detected = p_initial_A_detected,
+                                          p_initial_B = p_initial_B,
+                                          n = trial)$p_state_A,
+         p_state_A_detected = state3_after_n_trans(p_A2B = p_A2B,
+                                                   p_B2A = p_B2A,
+                                                   p_initial_A = p_initial_A, 
+                                                   p_initial_A_detected = p_initial_A_detected,
+                                                   p_initial_B = p_initial_B,
+                                                   n = trial)$p_state_A_detected,
+         p_state_B = state3_after_n_trans(p_A2B = p_A2B,
+                                          p_B2A = p_B2A,
+                                          p_initial_A = p_initial_A, 
+                                          p_initial_A_detected = p_initial_A_detected,
+                                          p_initial_B = p_initial_B,
+                                          n = trial)$p_state_B)
+
+
+
+
+
+
+plt_markovtrials_A_detected <- ggplot(states %>% filter(trial <= 30), aes(x = trial))+
+  geom_point(aes(y = p_state_A, color = "A"), pch = 1)+
+  geom_line(aes(y = p_state_A, color = "A"))+
+  geom_point(aes(y = p_state_A_detected, color = "A_d"), pch = 1)+
+  geom_line(aes(y = p_state_A_detected, color = "A_d"))+
+  geom_point(aes(y = p_state_B, color = "B"), pch = 1)+
+  geom_line(aes(y = p_state_B, color = "B"))+
+  scale_color_manual(name = "State",
+                     values = c("A" = "red",
+                                "B" = "blue",
+                                "A_d" = "green"),
+                     labels = c("A" = "A undetected",
+                                "B" = "B",
+                                "A_d" = "A detected"))+
+  scale_x_continuous(breaks = unique(states$trial))+
+  labs(y = "p")+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+plt_markovtrials_A_detected
+
+```
+
+## Markov chain when there's an ON state you didn't detect yet
+
+On the other hand, here a case where you start with an undetected A state (for instance, if we were to start the block with a guaranteed ON state, that also needs to be detected - I realize this is a somewhat artificial situation). For a potential miss, it just needs to make one transition to the off state.
+
+```{r}
+states <- data.frame(trial = 0:1000) %>%
+  mutate(p_A2B = 0.1,
+         p_B2A = 0.1,
+         p_initial_A = 1,
+         p_initial_A_detected = 0,
+         p_initial_B = 0,
+         Win = 1,
+         Loss = 10,
+         RT_nc = 1,
+         RT_c = 1.5,
+         ITI = 0.1) %>%
+  rowwise() %>%
+  mutate(p_state_A = state3_after_n_trans(p_A2B = p_A2B,
+                                          p_B2A = p_B2A,
+                                          p_initial_A = p_initial_A, 
+                                          p_initial_A_detected = p_initial_A_detected,
+                                          p_initial_B = p_initial_B,
+                                          n = trial)$p_state_A,
+         p_state_A_detected = state3_after_n_trans(p_A2B = p_A2B,
+                                                   p_B2A = p_B2A,
+                                                   p_initial_A = p_initial_A, 
+                                                   p_initial_A_detected = p_initial_A_detected,
+                                                   p_initial_B = p_initial_B,
+                                                   n = trial)$p_state_A_detected,
+         p_state_B = state3_after_n_trans(p_A2B = p_A2B,
+                                          p_B2A = p_B2A,
+                                          p_initial_A = p_initial_A, 
+                                          p_initial_A_detected = p_initial_A_detected,
+                                          p_initial_B = p_initial_B,
+                                          n = trial)$p_state_B)
+
+
+
+
+
+
+plt_markovtrials_A <- ggplot(states %>% filter(trial <= 30), aes(x = trial))+
+  geom_point(aes(y = p_state_A, color = "A"), pch = 1)+
+  geom_line(aes(y = p_state_A, color = "A"))+
+  geom_point(aes(y = p_state_A_detected, color = "A_d"), pch = 1)+
+  geom_line(aes(y = p_state_A_detected, color = "A_d"))+
+  geom_point(aes(y = p_state_B, color = "B"), pch = 1)+
+  geom_line(aes(y = p_state_B, color = "B"))+
+  scale_color_manual(name = "State",
+                     values = c("A" = "red",
+                                "B" = "blue",
+                                "A_d" = "green"),
+                     labels = c("A" = "A undetected",
+                                "B" = "B",
+                                "A_d" = "A detected"))+
+  scale_x_continuous(breaks = unique(states$trial))+
+  labs(y = "p")+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+plt_markovtrials_A
+
+```
+
+## Markov chain when there's an OFF state
+
+On the other hand, here a case where you start your run knowing that the state is off. For a potential miss to happen, it needs to turn on and then off again (2 transitions. )
+
+```{r}
+states <- data.frame(trial = 0:1000) %>%
+  mutate(p_A2B = 0.1,
+         p_B2A = 0.1,
+         p_initial_A = 0,
+         p_initial_A_detected = 0,
+         p_initial_B = 1,
+         Win = 1,
+         Loss = 10,
+         RT_nc = 1,
+         RT_c = 1.5,
+         ITI = 0.1) %>%
+  rowwise() %>%
+  mutate(p_state_A = state3_after_n_trans(p_A2B = p_A2B,
+                                          p_B2A = p_B2A,
+                                          p_initial_A = p_initial_A, 
+                                          p_initial_A_detected = p_initial_A_detected,
+                                          p_initial_B = p_initial_B,
+                                          n = trial)$p_state_A,
+         p_state_A_detected = state3_after_n_trans(p_A2B = p_A2B,
+                                                   p_B2A = p_B2A,
+                                                   p_initial_A = p_initial_A, 
+                                                   p_initial_A_detected = p_initial_A_detected,
+                                                   p_initial_B = p_initial_B,
+                                                   n = trial)$p_state_A_detected,
+         p_state_B = state3_after_n_trans(p_A2B = p_A2B,
+                                          p_B2A = p_B2A,
+                                          p_initial_A = p_initial_A, 
+                                          p_initial_A_detected = p_initial_A_detected,
+                                          p_initial_B = p_initial_B,
+                                          n = trial)$p_state_B)
+
+
+
+
+
+
+plt_markovtrials_B <- ggplot(states %>% filter(trial <= 20), aes(x = trial))+
+  geom_point(aes(y = p_state_A, color = "A"), pch = 1)+
+  geom_line(aes(y = p_state_A, color = "A"))+
+  geom_point(aes(y = p_state_A_detected, color = "A_d"), pch = 1)+
+  geom_line(aes(y = p_state_A_detected, color = "A_d"))+
+  geom_point(aes(y = p_state_B, color = "B"), pch = 1)+
+  geom_line(aes(y = p_state_B, color = "B"))+
+  scale_color_manual(name = "State",
+                     values = c("A" = "red",
+                                "B" = "blue",
+                                "A_d" = "green"),
+                     labels = c("A" = "A undetected",
+                                "B" = "B",
+                                "A_d" = "A detected"))+
+  scale_x_continuous(breaks = unique(states$trial))+
+  labs(y = "p")+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+plt_markovtrials_B
+```
+
+
+
+
+Let's again build that function...
+
+```{r}
+monster2 <- function(p_A2B = 0.1,
+                     p_B2A = 0.1,
+                     p_initial_A = 0,
+                     p_initial_A_detected = 0,
+                     p_initial_B = 1,
+                     Win = 1,
+                     Loss = 10,
+                     RT_nc = 1,
+                     RT_c = 1.5,
+                     ITI = 0.1, TTime = 90){
+  
+  #for debugging
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # p_initial_A = 0
+  # p_initial_A_detected = 0
+  # p_initial_B = 1
+  # Win = 1
+  # Loss = 5
+  # RT_nc = 1
+  # RT_c = 1.5
+  # ITI = 0.1
+  # TTime = 90
+  # 
+  
+  probs <- seq(0.01, 1, 0.01)
+  
+  #possible run lengths
+  r <- 1:1000
+  
+  #calculate A state using the markov states
+  inst_p_A <- lapply(r, function(x){
+    state3_after_n_trans(p_A2B = p_A2B,
+                         p_B2A = p_B2A, 
+                         p_initial_A = p_initial_A, 
+                         p_initial_A_detected = p_initial_A_detected, 
+                         p_initial_B = p_initial_B, 
+                         n = x)$p_state_A # this is the dangerous state!!!
+  }) %>% unlist()
+  
+  #the probability of a current trial miss is taking the prob of last trial state A times the probability that it switches back to B
+  p_missed <- lag(inst_p_A, 1, default = p_initial_A) * p_A2B
+  
+  #multiplied by loss amount yields the proportional estimated loss
+  p_missed_loss <- p_missed * Loss
+  
+  
+  # ggplot(data = NULL, aes(x = r))+
+  #   geom_line(aes(y = p_missed))
+  # 
+  # ggplot(data = NULL, aes(x = r))+
+  #   geom_line(aes(y = inst_p_A))
+  
+  
+  payoff_per_trial <- Win - p_missed_loss #this is for each checked trial
+  
+  avg_payoff_by_r <- (cumsum(payoff_per_trial) + p_missed_loss) / r # + p_missed_loss because in the current trial, if the state turned off, we didn't miss it. So we add the loss amount back
+  
+  earnings <- numeric(length(probs))
+  for (i in seq_along(probs)) {
+    
+    p <- probs[i]
+    w <- p * (1 - p)^(r - 1)
+    w <- w / sum(w)
+    avg_payoff_p <- sum(w * avg_payoff_by_r)
+    
+    denom_with_p <- TTime / (RT_nc + ITI + p * (RT_c - RT_nc))
+    earnings[i] <- avg_payoff_p * denom_with_p
+  }
+  
+  list(
+    earnings       = earnings,
+    probabilities  = probs
+  )
+  
+  
+}
+
+
+monster2(p_A2B = 0.1,
+         p_B2A = 0.1,
+         p_initial_A = 0,
+         p_initial_A_detected = 0,
+         p_initial_B = 1,
+         RT_nc = states$RT_nc[1],
+         RT_c = states$RT_c[1], 
+         ITI = states$ITI[1], 
+         Win = states$Win[1], 
+         Loss = states$Loss[1], 
+         TTime = 90) %>% 
+  as.data.frame() %>%
+  ggplot(aes(x= probabilities, y = earnings))+
+  geom_line()+
+  labs(title = "optimal behavior at the beginning of the block when state was OFF")+
+  theme_classic()
+```
+
+
+## Let's again look at how things change over time
+
+Let's plot the markov states again, i. e., the weights of these functions. We can see here, that the likelihood of a missed state is drastically different dependent on what state you start the block with.
+
+```{r, out.width="100%"}
+# for each trial, get the probability of each state
+runs_weight1 <- data.frame(trial = c(1:100, 1000),
+                           p_A2B = states$p_A2B[1],
+                           p_B2A = states$p_B2A[1],
+                           p_initial_A = 1, 
+                           p_initial_A_detected = 0, 
+                           p_initial_B = 0,
+                           label = "start_A")
+
+runs_weight2 <- data.frame(trial = c(1:100, 1000),
+                           p_A2B = states$p_A2B[1],
+                           p_B2A = states$p_B2A[1],
+                           p_initial_A = 0, 
+                           p_initial_A_detected = 1, 
+                           p_initial_B = 0,
+                           label = "start_A_detected")
+
+runs_weight3 <- data.frame(trial = c(1:100, 1000),
+                           p_A2B = states$p_A2B[1],
+                           p_B2A = states$p_B2A[1],
+                           p_initial_A = 0, 
+                           p_initial_A_detected = 0, 
+                           p_initial_B = 1,
+                           label = "start_B")
+
+
+runs_weight <- bind_rows(runs_weight1, runs_weight2, runs_weight3) %>%
+  rowwise() %>%
+  mutate(p_A = state3_after_n_trans(p_A2B = p_A2B, 
+                                    p_B2A = p_B2A, 
+                                    p_initial_A = p_initial_A, 
+                                    p_initial_A_detected = p_initial_A_detected, 
+                                    p_initial_B = p_initial_B,
+                                    n = trial)$p_state_A,
+         p_A_detected = state3_after_n_trans(p_A2B = p_A2B, 
+                                             p_B2A = p_B2A, 
+                                             p_initial_A = p_initial_A, 
+                                             p_initial_A_detected = p_initial_A_detected, 
+                                             p_initial_B = p_initial_B,
+                                             n = trial)$p_state_A_detected,
+         p_B = state3_after_n_trans(p_A2B = p_A2B, 
+                                    p_B2A = p_B2A, 
+                                    p_initial_A = p_initial_A, 
+                                    p_initial_A_detected = p_initial_A_detected, 
+                                    p_initial_B = p_initial_B,
+                                    n = trial)$p_state_B) %>%
+  group_by(label) %>%
+  mutate(p_miss = lag(p_A, 1) * p_A2B)
+
+
+plt_trials <- ggplot(runs_weight %>% filter(trial <= 40), aes(x = trial))+
+  geom_point(aes(y = p_A, color = "A"), pch = 1, size = .5)+
+  geom_line(aes(y = p_A, color = "A", linetype = "A"))+
+  geom_point(aes(y = p_A_detected, color = "A_d"), pch = 1, size = .5)+
+  geom_line(aes(y = p_A_detected, color = "A_d", linetype = "A_d"))+
+  geom_point(aes(y = p_B, color = "B"), pch = 1, size = .5)+
+  geom_line(aes(y = p_B, color = "B", linetype = "B"))+
+  geom_point(aes(y = p_miss, color = "A_missed"), pch = 1, size = .5)+
+  geom_line(aes(y = p_miss, color = "A_missed", linetype = "A_missed"))+
+  scale_color_manual(name = "State",
+                     values = c("A" = "red",
+                                "A_missed" = "red",
+                                "B" = "blue",
+                                "A_d" = "green"),
+                     labels = c("A" = "A undetected",
+                                "B" = "B",
+                                "A_d" = "A detected"))+
+  scale_linetype_manual(name = "State",
+                        values = c("A" = "solid",
+                                   "B" = "solid",
+                                   "A_d" = "solid",
+                                   "A_missed" = "dotted"),
+                        labels = c("A" = "A undetected",
+                                   "B" = "B",
+                                   "A_d" = "A detected"))+
+  #scale_x_continuous(breaks = unique(states$trial))+
+  facet_wrap(~label, nrow = 3, labeller = labeller(label = c("start_A" = "started w/ A",
+                                                   "start_A_detected" = "started w/ detected A",
+                                                   "start_B" = "started w/ B")))+
+  labs(y = "p",
+       title = "Trials",
+       subtitle = "")+
+  coord_cartesian(ylim = c(0,1))+
+  theme_classic()
+
+plt_trials
+
+df <- data.frame(p_A2B = runs_weight$p_A2B[1],
+                 p_B2A = runs_weight$p_B2A[1], 
+                 RT_nc = states$RT_nc[1],
+                 RT_c = states$RT_c[1], 
+                 ITI = states$ITI[1], 
+                 Win = states$Win[1], 
+                 Loss = states$Loss[1],
+                 p_initial_A = c(0, 0, 1), 
+                 p_initial_A_detected = c(0, 1, 0), 
+                 p_initial_B = c(1, 0, 0))
+
+fs <- df %>%
+  rowwise() %>%
+  mutate(label = case_when(p_initial_A == 1 ~ "start_A",
+                           p_initial_A_detected == 1 ~ "start_A_detected",
+                           p_initial_B == 1 ~ "start_B"),
+         l = list(monster2(p_A2B = p_A2B,
+                           p_B2A = p_B2A, 
+                           RT_nc = RT_nc,
+                           RT_c = RT_c, 
+                           ITI = ITI, 
+                           Win = Win, 
+                           Loss = Loss, 
+                           p_initial_A = p_initial_A, 
+                           p_initial_A_detected = p_initial_A_detected, 
+                           p_initial_B = p_initial_B) %>% 
+                    as.data.frame()
+         )) %>% 
+  as.data.frame() %>%
+  unnest(l)
+```
+
+
+So here, I am showing what the functions would look like in the very first trial of a block. Given that the markov state probabiltiies change over time (see above), this optimization landscape changes over time (until the steady state is reached). The resulting optimization landscapes are a combination of these three functions, each weighted by the probability that the current markov state is in that corresponding state. For example, in the steady state, each state has a probability of being active of 0.5. You can also think of this in terms of participants - 50 % of participants who have checked are in the ON state, 50 % in the OFF state. So the resulting opimization landscapes generalize across individual experiences.
+
+```{r, out.width="100%"}
+ggplot(fs, aes(x = probabilities, y = earnings, group = label, color = label))+
+  geom_line()+
+  theme_classic()
+```
+
+See below the optimization landscapes developing over time.
+
+```{r, out.width="100%", out.height="100%", fig.height = 10}
+fs_wide <- fs %>%
+  pivot_wider(names_from = label, values_from = earnings, id_cols = probabilities)
+
+runs_weight2 <- runs_weight %>%
+  mutate(inits = list(fs_wide)) %>%
+  unnest(inits) %>%
+  mutate(earnings_weighted = p_A * start_A + 
+           p_A_detected * start_A_detected + 
+           p_B * start_B) %>%
+  group_by(trial, label) %>%
+  mutate(is_max = ifelse(earnings_weighted == max(earnings_weighted), 1, 0)) 
+
+
+
+weight_method_plt <- ggplot(runs_weight2 %>% filter(trial != 1000), aes(x = probabilities, y = earnings_weighted, color = trial, group = trial))+
+  geom_line()+
+  geom_point(data = runs_weight2 %>% filter(is_max == 1), color = "black", pch = 23)+
+  geom_line(data = runs_weight2 %>% filter(trial == 1000), color = "red", linetype = "dashed")+
+  scale_color_viridis_c(end = 0.9, name = "Start trial of run")+
+  facet_wrap(~label, nrow = 3, labeller = labeller(label = c("start_A" = "started w/ A",
+                                                   "start_A_detected" = "started w/ detected A",
+                                                   "start_B" = "started w/ B")))+
+  labs(title = "Optimality curves as a function of trial at which run started.",
+       subtitle = "red: steady state",
+       x = "check rate",
+       y = "earnings, weighting method")+
+  theme_classic()
+
+#weight_method_plt
+
+ggpubr::ggarrange(plt_trials, weight_method_plt, common.legend = T)
+```
 
