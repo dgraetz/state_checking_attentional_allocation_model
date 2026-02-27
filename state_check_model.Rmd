@@ -916,7 +916,7 @@ monster2 <- function(p_A2B = 0.1,
     w <- w / sum(w)
     avg_payoff_p <- sum(w * avg_payoff_by_r)
     
-    denom_with_p <- TTime / (RT_nc + ITI + p * (RT_c - RT_nc))
+    denom_with_p <- TTime / (RT_nc + ITI + p * (RT_c - RT_nc)) # is this correct, why p* instead of just adding it? (I think this should be "guaranteed" because it's a run length)
     earnings[i] <- avg_payoff_p * denom_with_p
   }
   
