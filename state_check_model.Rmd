@@ -1083,7 +1083,7 @@ ggplot(fs, aes(x = probabilities, y = earnings, group = label, color = label))+
 
 See below the optimization landscapes developing over time.
 
-```{r, out.width="100%", out.height="100%", fig.height = 10}
+```{r, out.width="100%", out.height="100%", fig.height = 15}
 fs_wide <- fs %>%
   pivot_wider(names_from = label, values_from = earnings, id_cols = probabilities)
 
