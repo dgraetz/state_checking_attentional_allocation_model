@@ -1539,9 +1539,9 @@ build_mats <- function(p_A2B = 0.1,
   trans_mat["Ad_mA", "B_mA"] <- p_A2B * (1 - cr_a) # state changes without noticing (no checking)
   trans_mat["Ad_mA", "B_mB"] <- p_A2B * cr_a #(state chanegs and I update memory)
   
-  trans_mat["B_mA", "Au_mA"] <- p_A2B * (1-cr_a) # state changes but you dont check (because otherwise state would be Ad)
+  trans_mat["B_mA", "Au_mA"] <- p_B2A * (1-cr_a) # state changes but you dont check (because otherwise state would be Ad)
   trans_mat["B_mA", "Au_mB"] <- 0 #impossible memory transition
-  trans_mat["B_mA", "Ad_mA"] <- p_A2B * cr_a
+  trans_mat["B_mA", "Ad_mA"] <- p_B2A * cr_a
   trans_mat["B_mA", "B_mA"] <- (1 - p_B2A) * (1 - cr_a)
   trans_mat["B_mA", "B_mB"] <- (1 - p_B2A) * cr_a
   
@@ -1583,8 +1583,8 @@ Here's a figure of state transitions. It shows the probability of any check (whe
 states5_over_trials <- data.frame(setup = 1) %>%
   mutate(p_A2B = 0.1, 
          p_B2A = 0.1, 
-         cr_a = list(cr_a = seq(0, 1, by = 0.01)),
-         cr_b = list(cr_b = seq(0, 1, by = 0.01)),
+         cr_a = list(cr_a = seq(0, 1, by = 0.05)),
+         cr_b = list(cr_b = seq(0, 1, by = 0.05)),
          RT_nc = 0.6,
          RT_c = 1.7,
          ITI = 0.1,
@@ -1622,6 +1622,7 @@ states5_over_trials <- data.frame(setup = 1) %>%
   mutate(cum_RT = cumsum(expected_RT),
          cum_Rew = cumsum(expected_Rew))
 
+beepr::beep()
 
 ggplot(states5_over_trials %>% filter(cr_a %% 0.20 == 0 & 
                                       cr_b %% 0.20 == 0), aes(x = trial)) +
@@ -1647,7 +1648,7 @@ ggplot(states5_over_trials %>% filter(cr_a %% 0.20 == 0 &
                      breaks = c("Checks", "A_total", "Au_total", "A_detected", "B_total", "miss"),
                      name = "State")+
   facet_grid(label_cr_a ~ label_cr_b)+
-  coord_cartesian(ylim = c(0, .6))+
+  #coord_cartesian(ylim = c(0, .6))+
   labs(y = "p",
        subtitle = paste0("Parameters: RTnc = ", states5_over_trials$RT_nc[1], 
                          ", RTc = ", states5_over_trials$RT_c[1], 
