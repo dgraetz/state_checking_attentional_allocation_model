@@ -1,0 +1,966 @@
+---
+title: "Markov Simulation"
+output: html_document
+date: "2026-03-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rio)
+library(expm)
+source("state3_after_n_trans.R")
+```
+
+# Simulation of the geometric weights 
+
+## Simulation of run lengths given a check rate
+
+First, a function to get a random run length given a check ("success") probability
+
+```{r}
+#get a random run length
+get_run_length <- function(cr, attemps = 1000){
+  
+  rand <- runif(attemps)  #this is essentially generating trials
+  return(which(rand <= cr)[1]) #this is finding the index (run length) of the first success
+  
+}
+
+N <- 1000
+cr <- 0.02
+
+```
+
+Now, let's simulate a $N = `r N`$ of runs with a `r cr*100` % check rate.
+
+```{r}
+
+
+simulated_run_lengths <- lapply(1:1000, function(x){
+  get_run_length(cr = cr)
+}) %>% unlist()
+```
+
+Here, I am writing a function that gets the actual geometric weights
+
+```{r}
+get_geometric_run_weights <- function(cr, runs = 1000){
+  r <- 1:runs
+  w <- cr * (1 - cr)^(r - 1)
+  #w <- w / sum(w)
+  return(w)
+}
+```
+
+
+Let's check that the geometric distribution lines up with the predictions
+
+```{r}
+
+weights <- get_geometric_run_weights(cr)
+weights <- weights*N
+
+ggplot()+
+  geom_histogram(aes(x = simulated_run_lengths), binwidth = 1)+
+  geom_line(aes(x = seq_along(weights), y = weights))+
+  coord_cartesian(xlim = c(0, 50))+
+  theme_classic()
+
+
+```
+
+
+Here I'm building a function to generate a trial sequence given the switch parameters.
+
+```{r}
+gen_trial_seq <- function(N = 100, 
+                          p_A2B = 0.1,
+                          p_B2A = 0.1,
+                          start = "A_detected"){
+  
+  ran <- runif(N)
+  sequence <- character(N)
+  sequence[1] <- start
+  
+  current_state <- sequence[1]
+  
+  for(i in 2:N){
+    
+    if (current_state == "A"|current_state == "A_detected"){
+      if (ran[i] <= p_A2B){
+        current_state <- "B"
+      }
+    } else if (current_state == "B"){
+      if (ran[i] <= p_B2A){
+        current_state <- "A"
+      }
+    }
+    sequence[i] <- current_state
+  }
+  
+  return(sequence)
+}
+```
+
+Does the generated trial sequence line up with the simulation?
+
+```{r}
+# Simulating 1000 sequences of 100 trials. 
+
+sequences <- list()
+
+for (i in 1:1000){
+  sequences[[i]] <- data.frame(sequence = gen_trial_seq(p_A2B = 0.1, 
+                                                        p_B2A = 0.1, 
+                                                        N = 100, 
+                                                        start = "A_detected")) %>%
+    mutate(iteration = i)
+}
+
+
+sequences <- bind_rows(sequences)
+
+# calculate probabilities
+sequences_agg <- sequences %>%
+  group_by(iteration) %>%
+  mutate(trial = 0:(n()-1)) %>%
+  group_by(trial) %>%
+  summarize(sim_p_A = mean(sequence == "A"),
+            sim_p_A_detected = mean(sequence == "A_detected"),
+            sim_p_B = mean(sequence == "B"))
+
+# now calculate the markov states.
+
+calculated <- data.frame(trial = 1:100) %>%
+  rowwise() %>%
+  mutate(calc_p_A = state3_after_n_trans(p_A2B = 0.1, 
+                                         p_B2A = 0.1, 
+                                         p_initial_B = 0, 
+                                         p_initial_A_detected = 1, 
+                                         p_initial_A = 0, 
+                                         n = trial)$p_state_A,
+         calc_p_A_detected = state3_after_n_trans(p_A2B = 0.1, 
+                                                  p_B2A = 0.1, 
+                                                  p_initial_B = 0, 
+                                                  p_initial_A_detected = 1, 
+                                                  p_initial_A = 0, 
+                                                  n = trial)$p_state_A_detected,
+         calc_p_B = state3_after_n_trans(p_A2B = 0.1, 
+                                         p_B2A = 0.1, 
+                                         p_initial_B = 0, 
+                                         p_initial_A_detected = 1, 
+                                         p_initial_A = 0, 
+                                         n = trial)$p_state_B)
+
+sequences_agg <- left_join(sequences_agg, calculated)
+
+ggplot(sequences_agg, aes(x = trial))+
+  geom_line(aes(y = calc_p_A), color = "red", lwd = 2, alpha = .2)+
+  geom_line(aes(y = calc_p_A_detected), color = "green", lwd = 2, alpha = .2)+
+  geom_line(aes(y = calc_p_B), color = "blue", lwd = 2, alpha = .2)+
+  geom_line(aes(y = sim_p_A), color = "red")+
+  geom_line(aes(y = sim_p_A_detected), color = "green")+
+  geom_line(aes(y = sim_p_B), color = "blue")+
+  theme_classic()
+
+```
+
+# Simulation 2
+
+Here, I am actually not using geometric weights. Instead, I am simulating a bunch of agents that go through a number of trials with a given check rate, and given that check rate they might check or not. Note that this is a different approach compared to using run lengths. 
+
+```{r}
+
+simulate <- function(
+    Win = 1,
+    Loss = 10,
+    RT_nc = 0.6,
+    RT_c = 1.7,
+    ITI = 0.1, 
+    TTime = 90, 
+    N_sim = 10,
+    p_A2B = 0.1,
+    p_B2A = 0.1,
+    p_initial_A = 0,
+    p_initial_B = 1,
+    p_initial_A_detected = 0
+){
+  
+  # TO DEBUG
+  # Win = 1
+  # Loss = 12
+  # RT_nc = 0.7
+  # RT_c = 1.7
+  
+  # Win = 1
+  # Loss = 10
+  # RT_nc = 1
+  # RT_c = 1.5
+  # ITI = 0.1
+  # TTime = 90
+  # N_sim = 1000
+  # ITI = 0.1
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # p_inital_A = 0
+  # p_initial_B = 1
+  # p_inital_A_detected = 0
+  
+  #Trials to simulate:
+  N_trials <- (TTime / (min(RT_nc, RT_c))) + 3 # + 3 for buffer
+  
+  
+  # Let's generate a bunch of sequences first.
+  sequences <- list()
+  
+  for (i in 1:N_sim){
+    sequences[[i]] <- data.frame(sequence = gen_trial_seq(p_A2B = p_A2B, 
+                                                          p_B2A = p_B2A, 
+                                                          N = N_trials, 
+                                                          start = sample(x = c("A", "A_detected", "B"), 
+                                                                         size = 1, 
+                                                                         prob = c(p_initial_A, p_initial_A_detected, p_initial_B)))) %>%
+      mutate(iteration = i)
+  }
+  
+  
+  sequences <- bind_rows(sequences) %>%
+    mutate(rand = runif(n())) # this will serve as the random number to determine binary checks. If you have a check rate of 0.1, then you compare 0.1 against the random number. Since getting a random number of 0.1 or less is 10 %, we can binarize that number by this statement: random_number <= cr
+  
+  cr <- seq(0.01, 1, by = 0.05)  
+  
+  results <- list()
+  
+  for(i in 1:length(cr)){
+    #i = 10
+    
+    trials <- sequences %>% 
+      mutate(Check = ifelse(rand < cr[i], 1 , 0), #binarize checking based on check rate
+             RT = ifelse(Check == 1, RT_c, RT_nc) + ITI) %>% #determine check rate based on RTs and ITIs
+      group_by(iteration) %>% 
+      mutate(Trial = 1:n(), #enumerate trials, helpful for statistics later
+             RT_cum = cumsum(RT), #cumsum of RT to help figure out at which time we have to cut off the block
+             monster_id = ifelse(sequence == "A" & lag(sequence, 1, default = "B") == "B", 1, 0), #determine the monster ID, helpful to later figure out if we checked the monster or not; default "B" because we might start with state "A" (where you need to kill the monster in the very first trial) - this is a fairly unrealistic scenario that we probably won't implement, but it's good to have that possibility built in.
+             monster_id = cumsum(monster_id),
+             monster_id = ifelse(sequence == "B", 0, monster_id)) %>%
+      group_by(iteration, monster_id) %>%
+      mutate(n_checks = cumsum(Check)) %>% #this is helpful to determine whether we have checked a monster just before it turns off.
+      group_by(iteration) %>%
+      mutate(Rew = ifelse(sequence == "A" & lead(sequence) == "B" & n_checks == 0 & monster_id != 0, Win - Loss, Win), # if we missed a monster, where miss is defined as the monster turning off in the next trial.
+             Rew_cum = cumsum(Rew)) # cumulative reward.
+    
+    
+    iteration_summary <- trials %>%
+      filter(RT_cum < TTime) %>% 
+      summarize(Rew_cum = Rew_cum[n()],
+                RT_M = mean(RT),
+                N_trials = Trial[n()]) %>%
+      mutate(CR = cr[i])
+    
+    trial_summary <- trials %>%
+      group_by(Trial) %>%
+      summarize(p_A = mean(sequence == "A"),
+                p_A_detected = mean(sequence == "A_detected"),
+                p_B = mean(sequence == "B"),
+                Rew = mean(Rew),
+                RT_M = mean(RT)) %>%
+      mutate(CR = cr[i])
+    
+    results[[i]] <- list(iteration_summary = iteration_summary,
+                         trial_summary = trial_summary)
+    
+  }
+  
+  return(results)
+  
+}
+```
+
+
+## Simulation settings and run
+
+```{r}
+# SETTINGS
+Win = 1
+Loss = 1
+RT_nc = 0.8
+RT_c = 1.9
+p_A2B <- 0.1
+p_B2A <- 0.1
+p_initial_A_detected = 0
+p_initial_A = 0 
+p_initial_B = 1 
+ITI = 0.1
+TTime = 100
+# if (start == "A_detected"){
+#   p_initial_A_detected = 1
+# } else  if (start == "A"){
+#   p_initial_A = 1
+# } else  if (start == "B"){
+#   p_initial_B = 1
+# }
+
+# Simulate
+results <- simulate(Win = Win, 
+                    Loss = Loss, 
+                    RT_nc = RT_nc,
+                    RT_c = RT_c, 
+                    N_sim = 1000, 
+                    p_A2B = p_A2B, 
+                    p_B2A = p_B2A,
+                    ITI = 0.1, 
+                    TTime = 90, 
+                    p_initial_A = p_initial_A, 
+                    p_initial_B = p_initial_B, 
+                    p_initial_A_detected = p_initial_A_detected)
+```
+
+### Simulated optimality curve
+Now, let's get the optimality curve.
+
+```{r}
+
+
+iteration_summaries <- lapply(results, function(x){
+  x$iteration_summary
+})
+
+iteration_summaries <- bind_rows(iteration_summaries)
+
+simulation_optimality_plt <- iteration_summaries %>% 
+  group_by(CR) %>% 
+  summarize(Rew_cum = mean(Rew_cum)) %>%
+  ggplot(aes(x = CR, y = Rew_cum))+
+  geom_line()+
+  coord_cartesian(ylim = c(-100, 100))+
+  labs(x = "Check Rate",
+       y = "Reward",
+       title = "Simulated optimality curve")+
+  theme_classic()
+
+simulation_optimality_plt
+
+```
+
+For comparison, also calculate the markov state probabilities
+
+```{r}
+# Also calculate the states
+
+calculated <- data.frame(trial = 0:100) %>%
+  rowwise() %>%
+  mutate(calc_p_A = state3_after_n_trans(p_A2B = p_A2B, 
+                                         p_B2A = p_B2A, 
+                                         p_initial_B = p_initial_B, 
+                                         p_initial_A_detected = p_initial_A_detected, 
+                                         p_initial_A = p_initial_A, 
+                                         n = trial)$p_state_A,
+         calc_p_A_detected = state3_after_n_trans(p_A2B = p_A2B, 
+                                                  p_B2A = p_B2A, 
+                                                  p_initial_B = p_initial_B, 
+                                                  p_initial_A_detected = p_initial_A_detected, 
+                                                  p_initial_A = p_initial_A, 
+                                                  n = trial)$p_state_A_detected,
+         calc_p_B = state3_after_n_trans(p_A2B = p_A2B, 
+                                         p_B2A = p_B2A, 
+                                         p_initial_B = p_initial_B, 
+                                         p_initial_A_detected = p_initial_A_detected, 
+                                         p_initial_A = p_initial_A, 
+                                         n = trial)$p_state_B)
+
+
+
+```
+
+
+### Simulated vs. calculcated trial sequence
+
+Let's first look at the simulated trial sequence.
+
+```{r}
+trial_summaries <- lapply(results, function(x){
+  x$trial_summary
+})
+
+trial_summaries <- bind_rows(trial_summaries)
+
+
+
+trial_summaries %>% 
+  group_by(Trial) %>% 
+  summarize(p_A = mean(p_A),
+            p_A_detected = mean(p_A_detected),
+            p_B = mean(p_B),) %>%
+  ggplot(aes(x = Trial))+
+  geom_line(aes(y = p_A, color = "p_A"))+
+  geom_line(aes(y = p_A_detected, color = "p_A_detected"))+
+  geom_line(aes(y = p_B, color = "p_B"))+
+  geom_line(data = calculated, aes(x = trial + 1, y = calc_p_A, color = "p_A"), lwd = 3, alpha = 0.5)+
+  geom_line(data = calculated, aes(x = trial + 1, y = calc_p_A_detected, color = "p_A_detected"), lwd = 3, alpha = 0.5)+
+  geom_line(data = calculated, aes(x = trial + 1, y = calc_p_B, color = "p_B"), lwd = 3, alpha = 0.5)+
+  scale_color_manual(labels = c("p_A" = "A",
+                                "p_B" = "B",
+                                "p_A_detected" = "A detected"),
+                     values = c("p_A" = "red",
+                                "p_B" = "blue",
+                                "p_A_detected" = "green"),
+                     name = "Probability of State")+
+  coord_cartesian(xlim = c(0, 20), ylim = c(0,1))+
+  labs(y = "p",
+       title = "simulated states")+
+  theme_classic()
+```
+
+
+
+### Simulated optimality Curve by trial
+How does the optimality curve change over time?
+
+```{r}
+
+simulated_plt_by_trial <- trial_summaries %>% 
+  group_by(CR, Trial) %>% 
+  summarize(Rew_per_s = Rew/RT_M,
+            Rew_per_block = Rew_per_s * TTime) %>% 
+  filter(Trial < 30) %>%
+  ggplot(aes(x = CR, y = Rew_per_block, group = Trial, color = Trial))+
+  geom_line()+
+  scale_color_viridis_c()+
+  labs(x = "Check Rate",
+       y = "Reward per second",
+       title = "optimality curve")+
+  theme_classic()
+
+simulated_plt_by_trial
+
+```
+
+
+## Comparing with calculated payoff
+So why is this different to the predictions from this function?
+
+
+```{r}
+
+monster2 <- readRDS("monster2.RDS")
+
+
+# Here, I am getting the basic functions for all combinations of starts
+
+df <- data.frame(p_A2B = p_A2B,
+                 p_B2A = p_B2A,
+                 RT_nc = RT_nc,
+                 RT_c = RT_c,
+                 ITI = ITI,
+                 Win = Win,
+                 Loss = Loss,
+                 p_initial_A = c(0, 0, 1), 
+                 p_initial_A_detected = c(0, 1, 0), 
+                 p_initial_B = c(1, 0, 0))
+
+# This is just to defined three functions and their payoffs, we multiply them later with the respective probability of the state
+# essentially, each of the three functions is generated under the assumption that the respective state is 100 % active. For each possible check rate, I calculate the earnings for these three functions. Later, when the probability of state A is 0.2, state B = 0.8 and state A detected = 0, the earnings are weighed by the probability of the respective state, i. e., 0.2 * (earnings from 100 * state A) + 0.8 * (earnings from state B).
+
+fs <- df %>%
+  rowwise() %>%
+  mutate(label = case_when(p_initial_A == 1 ~ "start_A",
+                           p_initial_A_detected == 1 ~ "start_A_detected",
+                           p_initial_B == 1 ~ "start_B"),
+         l = list(monster2(p_A2B = p_A2B,
+                           p_B2A = p_B2A, 
+                           RT_nc = RT_nc,
+                           RT_c = RT_c, 
+                           ITI = ITI, 
+                           Win = Win, 
+                           Loss = Loss, 
+                           p_initial_A = p_initial_A, 
+                           p_initial_A_detected = p_initial_A_detected, 
+                           p_initial_B = p_initial_B, 
+                           TTime = TTime) %>% 
+                    as.data.frame()
+         )) %>% 
+  as.data.frame() %>%
+  unnest(l)
+
+
+fs_wide <- fs %>%
+  pivot_wider(names_from = label, values_from = earnings, id_cols = probabilities)
+
+
+
+#this is simply getting the states for different trials
+runs_weight <- data.frame(trial = c(1:100, 1000),
+                          p_A2B = p_A2B,
+                          p_B2A = p_B2A,
+                          p_initial_A = p_initial_A, 
+                          p_initial_A_detected = p_initial_A_detected, 
+                          p_initial_B = p_initial_B) %>%
+  rowwise() %>%
+  mutate(p_A = state3_after_n_trans(p_A2B = p_A2B, 
+                                    p_B2A = p_B2A, 
+                                    p_initial_A = p_initial_A, 
+                                    p_initial_A_detected = p_initial_A_detected, 
+                                    p_initial_B = p_initial_B,
+                                    n = trial)$p_state_A,
+         p_A_detected = state3_after_n_trans(p_A2B = p_A2B, 
+                                             p_B2A = p_B2A, 
+                                             p_initial_A = p_initial_A, 
+                                             p_initial_A_detected = p_initial_A_detected, 
+                                             p_initial_B = p_initial_B,
+                                             n = trial)$p_state_A_detected,
+         p_B = state3_after_n_trans(p_A2B = p_A2B, 
+                                    p_B2A = p_B2A, 
+                                    p_initial_A = p_initial_A, 
+                                    p_initial_A_detected = p_initial_A_detected, 
+                                    p_initial_B = p_initial_B,
+                                    n = trial)$p_state_B) %>%
+  mutate(p_miss = lag(p_A, 1, default = p_initial_A[1]) * p_A2B)
+
+# we're here weighing 
+runs_weight2 <- runs_weight %>%
+  mutate(inits = list(fs_wide)) %>%
+  unnest(inits) %>%
+  mutate(earnings_weighted = p_A * start_A + 
+           p_A_detected * start_A_detected + 
+           p_B * start_B) %>%
+  group_by(trial) %>%
+  mutate(is_max = ifelse(earnings_weighted == max(earnings_weighted), 1, 0)) 
+
+calculated_plt_by_trial <- ggplot(runs_weight2 %>% filter(trial != 1000), aes(x = probabilities, y = earnings_weighted, color = trial, group = trial))+
+  geom_line()+
+  geom_point(data = runs_weight2 %>% filter(is_max == 1), color = "black", pch = 23)+
+  geom_line(data = runs_weight2 %>% filter(trial == 1000), color = "red", linetype = "21", lwd = 2)+
+  scale_color_viridis_c(end = 0.9, name = "Start trial of run")+
+  labs(title = "Optimality curves as a function of trial at which run started.",
+       subtitle = "red: steady state",
+       x = "check rate",
+       y = "earnings, weighting method")+
+  theme_classic()
+
+calculated_plt_by_trial
+
+calculated_plt_optimality <- ggplot(runs_weight2 %>% filter(trial == 1000), aes(x = probabilities, y = earnings_weighted, group = trial))+
+  geom_line()+
+  labs(title = "Optimality curves as a function of trial at which run started.",
+       subtitle = "red: steady state",
+       x = "check rate",
+       y = "earnings, weighting method")+
+  theme_classic()
+
+cowplot::plot_grid(calculated_plt_optimality, simulation_optimality_plt, nrow = 1, align = "h")
+cowplot::plot_grid(calculated_plt_by_trial, simulated_plt_by_trial, nrow = 1, align = "h")
+
+
+```
+
+# Simulation that allows the specification of 2 probabilities
+
+cr_a: check rate if last time you checked state was A
+cr_b: check rate if last time you checked state was B
+
+```{r}
+# 
+# simulate2p <- function(
+#     Win = 1,
+#     Loss = 10,
+#     RT_nc = 0.6,
+#     RT_c = 1.7,
+#     ITI = 0.1, 
+#     TTime = 90, 
+#     N_sim = 10,
+#     p_A2B = 0.1,
+#     p_B2A = 0.1,
+#     p_initial_A = 0,
+#     p_initial_B = 1,
+#     p_initial_A_detected = 0
+# ){
+#   
+#   # TO DEBUG
+#   # Win = 1
+#   # Loss = 12
+#   # RT_nc = 0.7
+#   # RT_c = 1.7
+#   # Win = 1
+#   # Loss = 10
+#   # RT_nc = 1
+#   # RT_c = 1.5
+#   # ITI = 0.1
+#   # TTime = 90
+#   # N_sim = 1000
+#   # ITI = 0.1
+#   # p_A2B = 0.1
+#   # p_B2A = 0.1
+#   # p_inital_A = 0
+#   # p_initial_B = 1
+#   # p_inital_A_detected = 0
+#   
+#   N_sim = 100
+#   
+#   #Trials to simulate:
+#   N_trials <- (TTime / (min(RT_nc, RT_c))) + 3 # + 3 for buffer
+#   
+#   
+#   # Let's generate a bunch of sequences first.
+#   sequences <- list()
+#   
+#   for (i in 1:N_sim){
+#     sequences[[i]] <- data.frame(sequence = gen_trial_seq(p_A2B = p_A2B, 
+#                                                           p_B2A = p_B2A, 
+#                                                           N = N_trials, 
+#                                                           start = sample(x = c("A", "A_detected", "B"), 
+#                                                                          size = 1, 
+#                                                                          prob = c(p_initial_A, p_initial_A_detected, p_initial_B)))) %>%
+#       mutate(iteration = i)
+#   }
+#   
+#   
+#   sequences <- bind_rows(sequences) %>%
+#     mutate(rand = runif(n())) # this will serve as the random number to determine binary checks. If you have a check rate of 0.1, then you compare 0.1 against the random number. Since getting a random number of 0.1 or less is 10 %, we can binarize that number by this statement: random_number <= cr
+#   
+#   cr_a <- seq(0.0, 1, by = 0.05)  
+#   cr_b <- seq(0.0, 1, by = 0.05)  
+#   
+#   results <- list()
+#   
+#   paste0("Running ", length(cr_a)*length(cr_b), " iterations")
+#   
+#   current_it <- 0
+#   for(i_cr_a in 1:length(cr_a)){
+#     
+#     for(i_cr_b in 1:length(cr_b)){
+#     
+#       current_it <- current_it + 1
+#       
+#       print(paste0("Progress:", round(current_it/(length(cr_a) * length(cr_b))), 2))
+#       # i_cr_a <- 1
+#       # i_cr_b <- 50
+#       # trials <- sequences %>% 
+#       #   group_by(iteration) %>% 
+#       #   mutate(cr_a = cr_a[i_cr_a],
+#       #          cr_b = cr_b[i_cr_b],
+#       #          memory = sequence[1],
+#       #          is_a_check = ifelse(rand <= cr_a, 1, 0),
+#       #          is_b_check = ifelse(rand <= cr_b, 1, 0),
+#       #          check = case_when(lag(memory, 1, default = memory[1]) == "A" & is_a_check == 1 ~ 1,
+#       #                             lag(memory, 1, default = memory[1]) == "B" & is_b_check == 1 ~ 1, 
+#       #                            .default =  0),
+#       #          memory = case_when(check == 1 ~ sequence,
+#       #                             check == 0 ~ lag(memory, 1, default = memory[1])))
+#         
+#         
+#         
+#       trials <- sequences %>%
+#         group_by(iteration) %>%
+#         mutate(memory = character(n()),
+#                check = integer(n()),
+#                cr = integer(n()),
+#                cr_a = cr_a[i_cr_a],
+#                cr_b = cr_b[i_cr_b],
+#                new_iteration = ifelse(lag(iteration, default = 0) != iteration, 1, 0))
+# 
+# 
+# 
+# 
+#       for (i in 1:nrow(trials)){
+# 
+#         if (trials$new_iteration[i] == 1){
+#           trials$check[i] <- 0L #because we know with which the first block starts
+#           trials$memory[i] <- trials$sequence[i]
+#           trials$memory[i + 1] <- trials$memory[i]
+# 
+# 
+#           if(trials$memory[i] == "A"){
+#             trials$cr[i] <- cr_a[i_cr_a]
+#           } else if (trials$memory[i] == "B"){
+#             trials$cr[i] <- cr_b[i_cr_b]
+#           }
+# 
+#           next
+#         }
+# 
+#         if(trials$memory[i] == "A"){
+#           trials$cr[i] <- cr_a[i_cr_a]
+#         } else if (trials$memory[i] == "B"){
+#           trials$cr[i] <- cr_b[i_cr_b]
+#         }
+# 
+#         if(trials$rand[i] <= trials$cr[i]){
+#           trials$check[i] <- 1L
+#           if (i != nrow(trials)){
+#             if (trials$new_iteration[i+1] == 0){
+#               trials$memory[i + 1] <- trials$sequence[i]
+#             }
+#           }
+#         } else {
+#           trials$check[i] <- 0L
+#           if (i != nrow(trials)){
+#             if (trials$new_iteration[i+1] == 0){
+#               trials$memory[i + 1] <- trials$memory[i]
+#             }
+#           }
+#         }
+#       }
+#       
+#       
+#       ########
+#       
+#       
+#       
+#       trials <- trials %>%
+#         mutate(RT = ifelse(check == 1, RT_c, RT_nc) + ITI) %>% #determine check rate based on RTs and ITIs
+#         group_by(iteration) %>% 
+#         mutate(Trial = 1:n(), #enumerate trials, helpful for statistics later
+#                RT_cum = cumsum(RT), #cumsum of RT to help figure out at which time we have to cut off the block
+#                monster_id = ifelse(sequence == "A" & lag(sequence, 1, default = "B") == "B", 1, 0), #determine the monster ID, helpful to later figure out if we checked the monster or not; default "B" because we might start with state "A" (where you need to kill the monster in the very first trial) - this is a fairly unrealistic scenario that we probably won't implement, but it's good to have that possibility built in.
+#                monster_id = cumsum(monster_id),
+#                monster_id = ifelse(sequence == "B", 0, monster_id)) %>%
+#         group_by(iteration, monster_id) %>%
+#         mutate(n_checks = cumsum(check)) %>% #this is helpful to determine whether we have checked a monster just before it turns off.
+#         group_by(iteration) %>%
+#         mutate(Rew = ifelse(sequence == "A" & lead(sequence) == "B" & n_checks == 0 & monster_id != 0, Win - Loss, Win), # if we missed a monster, where miss is defined as the monster turning off in the next trial.
+#                Rew_cum = cumsum(Rew)) # cumulative reward.
+#       
+#       
+#       iteration_summary <- trials %>%
+#         filter(RT_cum < TTime) %>% 
+#         summarize(Rew_cum = Rew_cum[n()],
+#                   RT_M = mean(RT),
+#                   N_trials = Trial[n()]) %>%
+#         mutate(cr_a = cr_a[i_cr_a],
+#                cr_b = cr_b[i_cr_b])
+#       
+#       trial_summary <- trials %>%
+#         group_by(Trial) %>%
+#         summarize(p_A = mean(sequence == "A"),
+#                   p_A_detected = mean(sequence == "A_detected"),
+#                   p_B = mean(sequence == "B"),
+#                   Rew = mean(Rew),
+#                   RT_M = mean(RT)) %>%
+#         mutate(cr_a = cr_a[i_cr_a],
+#                cr_b = cr_a[i_cr_b])
+#       
+#       results[[length(results) + 1]] <- list(iteration_summary = iteration_summary,
+#                                              trial_summary = trial_summary)
+#       
+#     }
+#   }
+#   
+#   return(results)
+#   
+# }
+```
+
+
+
+```{r}
+
+# library(Rcpp)
+# sourceCpp("memory_loop.cpp")
+
+saveRDS(gen_trial_seq, "gen_trial_seq.RDS")
+
+simulate2p <- function(
+    Win = 1,
+    Loss = 10,
+    RT_nc = 0.6,
+    RT_c = 1.7,
+    ITI = 0.1, 
+    TTime = 90, 
+    N_sim = 10,
+    p_A2B = 0.1,
+    p_B2A = 0.1,
+    p_initial_A = 0,
+    p_initial_B = 1,
+    p_initial_A_detected = 0
+){
+  
+  print(getwd())
+  library(Rcpp)
+  sourceCpp("memory_loop.cpp")
+  gen_trial_seq <- readRDS("gen_trial_seq.RDS")
+  # TO DEBUG
+  # Win = 1
+  # Loss = 12
+  # RT_nc = 0.7
+  # RT_c = 1.7
+  # Win = 1
+  # Loss = 10
+  # RT_nc = 1
+  # RT_c = 1.5
+  # ITI = 0.1
+  # TTime = 90
+  # N_sim = 1000
+  # ITI = 0.1
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # p_inital_A = 0
+  # p_initial_B = 1
+  # p_inital_A_detected = 0
+  
+  
+  
+  #Trials to simulate:
+  N_trials <- (TTime / (min(RT_nc, RT_c))) + 3 # + 3 for buffer
+  
+  
+  # Let's generate a bunch of sequences first.
+  sequences <- list()
+  
+  for (i in 1:N_sim){
+    sequences[[i]] <- data.frame(sequence = gen_trial_seq(p_A2B = p_A2B, 
+                                                          p_B2A = p_B2A, 
+                                                          N = N_trials, 
+                                                          start = sample(x = c("A", "A_detected", "B"), 
+                                                                         size = 1, 
+                                                                         prob = c(p_initial_A, p_initial_A_detected, p_initial_B)))) %>%
+      mutate(iteration = i)
+  }
+  
+  
+  sequences <- bind_rows(sequences) %>%
+    mutate(rand = runif(n()))  %>%# this will serve as the random number to determine binary checks. If you have a check rate of 0.1, then you compare 0.1 against the random number. Since getting a random number of 0.1 or less is 10 %, we can binarize that number by this statement: random_number <= cr
+  group_by(iteration) %>%
+  mutate(
+    Trial = 1:n(),
+    new_iteration = ifelse(lag(iteration, default = 0) != iteration, 1L, 0L),
+    monster_id = ifelse(sequence == "A" & lag(sequence, 1, default = "B") == "B", 1, 0),
+    monster_id = cumsum(monster_id),
+    monster_id = ifelse(sequence == "B", 0, monster_id)
+  ) %>%
+  ungroup()
+  
+  cr_a <- seq(0.0, 1, by = 0.05)  
+  cr_b <- seq(0.0, 1, by = 0.05)  
+  
+  results <- list()
+  
+  paste0("Running ", length(cr_a)*length(cr_b), " iterations")
+  
+  current_it <- 0
+  for(i_cr_a in 1:length(cr_a)){
+    
+    for(i_cr_b in 1:length(cr_b)){
+    
+      # i_cr_a <- 10
+      # i_cr_a <- 15
+      
+      current_it <- current_it + 1
+      
+      if (current_it %% 100 == 0){
+        print(paste0("Progress: ", round((current_it/(length(cr_a) * length(cr_b)))*100, 2), "%"))
+      }
+
+      
+      
+      result <- compute_memory_check(sequences$sequence, 
+                                     sequences$rand,
+                                     cr_a[i_cr_a], 
+                                     cr_b[i_cr_b],
+                                     sequences$new_iteration)
+      
+      
+      ########
+      
+      
+      
+      trials <- sequences %>%
+      mutate(memory = result$memory,
+             check = result$check,
+             RT = ifelse(check == 1, RT_c, RT_nc) + ITI) %>% #determine check rate based on RTs and ITIs
+        group_by(iteration) %>% 
+        mutate(Trial = 1:n(), #enumerate trials, helpful for statistics later
+               RT_cum = cumsum(RT), #cumsum of RT to help figure out at which time we have to cut off the block
+               monster_id = ifelse(sequence == "A" & lag(sequence, 1, default = "B") == "B", 1, 0), #determine the monster ID, helpful to later figure out if we checked the monster or not; default "B" because we might start with state "A" (where you need to kill the monster in the very first trial) - this is a fairly unrealistic scenario that we probably won't implement, but it's good to have that possibility built in.
+               monster_id = cumsum(monster_id),
+               monster_id = ifelse(sequence == "B", 0, monster_id)) %>%
+        group_by(iteration, monster_id) %>%
+        mutate(n_checks = cumsum(check)) %>% #this is helpful to determine whether we have checked a monster just before it turns off.
+        group_by(iteration) %>%
+        mutate(Rew = ifelse(sequence == "A" & lead(sequence) == "B" & n_checks == 0 & monster_id != 0, Win - Loss, Win), # if we missed a monster, where miss is defined as the monster turning off in the next trial.
+               Rew_cum = cumsum(Rew)) # cumulative reward.
+      
+      
+      iteration_summary <- trials %>%
+        filter(RT_cum < TTime) %>% 
+        summarize(Rew_cum = Rew_cum[n()],
+                  RT_M = mean(RT),
+                  N_trials = Trial[n()]) %>%
+        mutate(cr_a = cr_a[i_cr_a],
+               cr_b = cr_b[i_cr_b])
+      
+      trial_summary <- trials %>%
+        group_by(Trial) %>%
+        summarize(p_A = mean(sequence == "A"),
+                  p_A_detected = mean(sequence == "A_detected"),
+                  p_B = mean(sequence == "B"),
+                  Rew = mean(Rew),
+                  RT_M = mean(RT)) %>%
+        mutate(cr_a = cr_a[i_cr_a],
+               cr_b = cr_a[i_cr_b])
+      
+      results[[length(results) + 1]] <- list(iteration_summary = iteration_summary,
+                                             trial_summary = trial_summary)
+      
+    }
+  }
+  
+  return(results)
+  
+}
+
+saveRDS(simulate2p, "simulate2p.RDS")
+
+
+```
+
+
+```{r}
+
+output <- simulate2p(
+    Win = 1,
+    Loss = 50,
+    RT_nc = 0.6,
+    RT_c = 1.7,
+    ITI = 0.1, 
+    TTime = 90, 
+    N_sim = 100,
+    p_A2B = 0.1,
+    p_B2A = 0.1,
+    p_initial_A = 0,
+    p_initial_B = 1,
+    p_initial_A_detected = 0
+)
+  
+  
+
+
+iteration_summaries <- lapply(output, function(y){
+  y$iteration_summary
+}) %>% bind_rows %>%
+  group_by(cr_a, cr_b) %>%
+  summarize(Rew_cum = mean(Rew_cum))
+
+
+ggplot(iteration_summaries, aes(x = cr_a, y = Rew_cum, color = cr_b, group = cr_b))+
+  geom_line()+
+  scale_color_viridis_c()+
+  theme_classic()
+
+
+ggplot(iteration_summaries, aes(x = cr_a, y = cr_b, fill = Rew_cum, group = Rew_cum))+
+  geom_tile()+
+  scale_fill_viridis_c()
+
+
+
+
+```
+
+
+
+
+

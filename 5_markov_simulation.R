@@ -137,7 +137,7 @@ simulate_monster <- function(p_A2B = 0.1,
                              ITI = 0.1, 
                              TTime = 90, 
                              start = "A",
-                             Trials = 1:20,
+                             N_trials = 20,
                              N_sim = 1000
                              ){
   
@@ -290,7 +290,7 @@ RT_nc = 1
 RT_c = 1.5
 ITI = 0.1 
 TTime = 90 
-start = "A_detected"
+start = "B"
 
 ####################
 #Code below automatically figures out the starting probablity based on start vector
@@ -315,7 +315,7 @@ sim_out <- simulate_monster(p_A2B = p_A2B,
                             ITI = ITI, 
                             TTime = TTime, 
                             start = start,
-                            Trials = 20,
+                            N_trials = 20,
                             N_sim = 1000)
 
 

@@ -23,6 +23,8 @@ knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 library(tidyverse)
 library(rio)
 library(expm)
+library(plotly)
+library(viridis)
 options(scipen = 99)
 ```
 
@@ -117,9 +119,9 @@ states <- data.frame(trial = 0:1000) %>%
          p_B2A = 0.1,
          p_initial_A = 0,
          Win = 1,
-         Loss = 10,
-         RT_nc = 1,
-         RT_c = 1.5,
+         Loss = 100,
+         RT_nc = 0.8,
+         RT_c = 1.9,
          ITI = 0.1) %>%
   rowwise() %>%
   mutate(p_state_A = state_after_n_trans(p_A2B = p_A2B,
@@ -572,7 +574,7 @@ ggpubr::ggarrange(calc_method_plt, weight_method_plt, common.legend = T, legend 
 
 
 
-# So actually, it's a three state markov process
+# Model 2: So actually, it's a three state markov process
 
 In reality, there are three states. The state is off, on, or on AND detected. The model before cannot distinguish between the latter two. So again, let's define the markov process. Here, the three states are: State off, state on, and state on, detected. The matrix overall looks similar - indeed, there is no transition possible INTO the detected state. The detected state becomes important only as an initial state. In other words, when you just checked, you're in the detected state. This essentially "steals" probability from the undetected A state, and better models the probability of a new, undetected A state coming on.
 
@@ -658,7 +660,7 @@ state3_after_n_trans <- function(p_A2B,
 Here, we start with an A/On state that we just detected. The green, detected state fades rapidly. The probability of transitioning into the OFF state rises fast, the probability of being in the A state is rising slower, due to the fact that you can't go from a detected A state to another undetected A state. So, from the current status to a pontial miss, it first needs to turn off, then on, then off again.
 
 ```{r}
-states <- data.frame(trial = 0:1000) %>%
+state_p_A_detected <- data.frame(trial = 0:1000) %>%
   mutate(p_A2B = 0.1,
          p_B2A = 0.1,
          p_initial_A = 0,
@@ -694,7 +696,7 @@ states <- data.frame(trial = 0:1000) %>%
 
 
 
-plt_markovtrials_A_detected <- ggplot(states %>% filter(trial <= 30), aes(x = trial))+
+plt_markovtrials_A_detected <- ggplot(state_p_A_detected %>% filter(trial <= 30), aes(x = trial))+
   geom_point(aes(y = p_state_A, color = "A"), pch = 1)+
   geom_line(aes(y = p_state_A, color = "A"))+
   geom_point(aes(y = p_state_A_detected, color = "A_d"), pch = 1)+
@@ -722,7 +724,7 @@ plt_markovtrials_A_detected
 On the other hand, here a case where you start with an undetected A state (for instance, if we were to start the block with a guaranteed ON state, that also needs to be detected - I realize this is a somewhat artificial situation). For a potential miss, it just needs to make one transition to the off state.
 
 ```{r}
-states <- data.frame(trial = 0:1000) %>%
+state_p_A <- data.frame(trial = 0:1000) %>%
   mutate(p_A2B = 0.1,
          p_B2A = 0.1,
          p_initial_A = 1,
@@ -758,7 +760,7 @@ states <- data.frame(trial = 0:1000) %>%
 
 
 
-plt_markovtrials_A <- ggplot(states %>% filter(trial <= 30), aes(x = trial))+
+plt_markovtrials_A <- ggplot(state_p_A %>% filter(trial <= 20), aes(x = trial))+
   geom_point(aes(y = p_state_A, color = "A"), pch = 1)+
   geom_line(aes(y = p_state_A, color = "A"))+
   geom_point(aes(y = p_state_A_detected, color = "A_d"), pch = 1)+
@@ -786,7 +788,7 @@ plt_markovtrials_A
 On the other hand, here a case where you start your run knowing that the state is off. For a potential miss to happen, it needs to turn on and then off again (2 transitions. )
 
 ```{r}
-states <- data.frame(trial = 0:1000) %>%
+state_p_B <- data.frame(trial = 0:1000) %>%
   mutate(p_A2B = 0.1,
          p_B2A = 0.1,
          p_initial_A = 0,
@@ -822,7 +824,7 @@ states <- data.frame(trial = 0:1000) %>%
 
 
 
-plt_markovtrials_B <- ggplot(states %>% filter(trial <= 20), aes(x = trial))+
+plt_markovtrials_B <- ggplot(state_p_B %>% filter(trial <= 20), aes(x = trial))+
   geom_point(aes(y = p_state_A, color = "A"), pch = 1)+
   geom_line(aes(y = p_state_A, color = "A"))+
   geom_point(aes(y = p_state_A_detected, color = "A_d"), pch = 1)+
@@ -846,6 +848,7 @@ plt_markovtrials_B
 
 
 
+## Function 2
 
 Let's again build that function...
 
@@ -861,6 +864,7 @@ monster2 <- function(p_A2B = 0.1,
                      RT_c = 1.5,
                      ITI = 0.1, TTime = 90){
   
+  
   #for debugging
   # p_A2B = 0.1
   # p_B2A = 0.1
@@ -874,6 +878,10 @@ monster2 <- function(p_A2B = 0.1,
   # ITI = 0.1
   # TTime = 90
   # 
+  
+  # if (sum(c(p_initial_A, p_initial_A_detected, p_initial_B)) != 1){
+  #   stop("Error: Probabilities must sum to 1.")
+  # }
   
   probs <- seq(0.01, 1, 0.01)
   
@@ -891,10 +899,11 @@ monster2 <- function(p_A2B = 0.1,
   }) %>% unlist()
   
   #the probability of a current trial miss is taking the prob of last trial state A times the probability that it switches back to B
-  p_missed <- lag(inst_p_A, 1, default = p_initial_A) * p_A2B
+  #p_missed <- lag(inst_p_A, 1, default = p_initial_A) * p_A2B
+  p_missed <- inst_p_A * p_A2B
   
   #multiplied by loss amount yields the proportional estimated loss
-  p_missed_loss <- p_missed * Loss
+  p_missed_loss <- p_missed * abs(Loss)
   
   
   # ggplot(data = NULL, aes(x = r))+
@@ -928,6 +937,7 @@ monster2 <- function(p_A2B = 0.1,
   
 }
 
+saveRDS(monster2, file("monster2.RDS"))
 
 monster2(p_A2B = 0.1,
          p_B2A = 0.1,
@@ -944,7 +954,114 @@ monster2(p_A2B = 0.1,
   ggplot(aes(x= probabilities, y = earnings))+
   geom_line()+
   labs(title = "optimal behavior at the beginning of the block when state was OFF")+
+  scale_y_continuous(limits = c(40, 70))+
   theme_classic()
+
+
+```
+
+
+### Side-track: Comparing with a pure-run based function
+
+```{r}
+monster2_runs <- function(p_A2B = 0.1,
+                          p_B2A = 0.1,
+                          p_initial_A = 0,
+                          p_initial_A_detected = 0,
+                          p_initial_B = 1,
+                          Win = 1,
+                          Loss = 10,
+                          RT_nc = 1,
+                          RT_c = 1.5,
+                          ITI = 0.1, TTime = 90){
+  
+  
+  #for debugging
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # p_initial_A = 0
+  # p_initial_A_detected = 0
+  # p_initial_B = 1
+  # Win = 1
+  # Loss = 5
+  # RT_nc = 1
+  # RT_c = 1.5
+  # ITI = 0.1
+  # TTime = 90
+  # 
+  
+  # if (sum(c(p_initial_A, p_initial_A_detected, p_initial_B)) != 1){
+  #   stop("Error: Probabilities must sum to 1.")
+  # }
+  
+  #possible run lengths
+  r <- 1:100
+  
+  #calculate A state using the markov states
+  inst_p_A <- lapply(r, function(x){
+    state3_after_n_trans(p_A2B = p_A2B,
+                         p_B2A = p_B2A, 
+                         p_initial_A = p_initial_A, 
+                         p_initial_A_detected = p_initial_A_detected, 
+                         p_initial_B = p_initial_B, 
+                         n = x)$p_state_A # this is the dangerous state!!!
+  }) %>% unlist()
+  
+  #the probability of a current trial miss is taking the prob of last trial state A times the probability that it switches back to B
+  #p_missed <- lag(inst_p_A, 1, default = p_initial_A) * p_A2B
+  p_missed <- inst_p_A * p_A2B
+  
+  #multiplied by loss amount yields the proportional estimated loss
+  p_missed_loss <- p_missed * abs(Loss)
+  
+  
+  # ggplot(data = NULL, aes(x = r))+
+  #   geom_line(aes(y = p_missed))
+  # 
+  # ggplot(data = NULL, aes(x = r))+
+  #   geom_line(aes(y = inst_p_A))
+  
+  
+  payoff_per_trial <- Win - p_missed_loss #this is for each checked trial
+  
+  avg_payoff_by_r <- (cumsum(payoff_per_trial) + p_missed_loss) / r # + p_missed_loss because in the current trial, if the state turned off, we didn't miss it. So we add the loss amount back
+  
+  
+  denom_with_p <- TTime / (RT_nc + ITI + (1/r) * (RT_c - RT_nc)) # is this correct, why p* instead of just adding it? (I think this should be "guaranteed" because it's a run length)
+  earnings <- avg_payoff_by_r * denom_with_p
+  
+  
+  list(
+    earnings = earnings,
+    runs  = r
+  )
+  
+  
+}
+
+
+
+monster2_runs(p_A2B = 0.1,
+              p_B2A = 0.1,
+              p_initial_A = 0,
+              p_initial_A_detected = 0,
+              p_initial_B = 1,
+              RT_nc = states$RT_nc[1],
+              RT_c = states$RT_c[1], 
+              ITI = states$ITI[1], 
+              Win = states$Win[1], 
+              Loss = states$Loss[1], 
+              TTime = 90) %>% 
+  as.data.frame() %>%
+  ggplot(aes(x= 1/runs, y = earnings))+
+  geom_line()+
+  geom_point()+
+  labs(title = "optimal behavior at the beginning of the block when state was OFF")+
+  scale_y_continuous(limits = c(40, 70))+
+  theme_classic()
+
+
+
 ```
 
 
@@ -1116,4 +1233,635 @@ weight_method_plt <- ggplot(runs_weight2 %>% filter(trial != 1000), aes(x = prob
 
 ggpubr::ggarrange(plt_trials, weight_method_plt, common.legend = T)
 ```
+
+
+## Just making sure it always works with a markov process instead of weighting
+
+```{r}
+
+trials <- data.frame(trial = c(1:20, 1000)) %>%
+  mutate(p_A2B = runs_weight$p_A2B[1],
+         p_B2A = runs_weight$p_B2A[1], 
+         RT_nc = states$RT_nc[1],
+         RT_c = states$RT_c[1], 
+         ITI = states$ITI[1], 
+         Win = states$Win[1], 
+         Loss = states$Loss[1]) %>%
+  rowwise() %>%
+  mutate(res = state3_after_n_trans(p_A2B = p_A2B,
+                                    p_B2A = p_B2A,
+                                    p_initial_A = 1, 
+                                    p_initial_A_detected = 0, 
+                                    p_initial_B = 0,
+                                    n = trial)) %>%
+  unnest() %>%
+  rowwise() %>%
+  mutate(res = list(monster2(p_A2B = p_A2B, 
+                             p_B2A = p_B2A, 
+                             p_initial_A = p_state_A,
+                             p_initial_A_detected = p_state_A_detected, 
+                             p_initial_B = p_state_B, 
+                             Win = Win, 
+                             Loss = Loss, 
+                             RT_nc = RT_nc,
+                             RT_c = RT_c, 
+                             ITI = ITI,
+                             TTime = 90) %>% as.data.frame())) %>%
+  unnest() %>%
+  group_by(trial) %>%
+  mutate(is_max = ifelse(earnings == max(earnings), 1, 0))
+
+
+
+
+
+ggplot(trials %>% filter(trial < 1000), aes(x = probabilities, y = earnings, color = trial, group = trial))+
+  geom_line()+
+  geom_point(data = trials %>% filter(is_max == 1), color = "black", pch = 23)+
+  geom_line(data = trials %>% filter(trial == 1000), color = "red", linetype = "dashed")+
+  scale_color_viridis_c(end = 1, name = "Start trial of run")+
+  # facet_wrap(~label, nrow = 3, labeller = labeller(label = c("start_A" = "started w/ A",
+  #                                                  "start_A_detected" = "started w/ detected A",
+  #                                                  "start_B" = "started w/ B")))+
+  labs(title = "Optimality curves as a function of trial at which run started.",
+       subtitle = "red: steady state",
+       x = "check rate",
+       y = "earnings, weighting method")+
+  theme_classic()
+
+
+```
+
+
+# Some interesting constellations
+
+```{r}
+
+monster2(p_A2B = 0.2,
+         p_B2A = 0.2,
+         p_initial_A = 0,
+         p_initial_A_detected = 0,
+         p_initial_B = 1,
+         RT_nc = 1,
+         RT_c = 2, 
+         ITI = 0.1,
+         Win = 1,
+         Loss = 5,
+         TTime = 90) %>%
+  as.data.frame()%>%
+  mutate(earnings = earnings/max(earnings)) %>%
+  ggplot(aes(x = probabilities, y = earnings))+
+  geom_line()+
+  ylim(0,1)+
+  theme_classic()
+
+
+```
+
+
+```{r}
+
+monster2(p_A2B = 0.05,
+         p_B2A = 0.01,
+         p_initial_A = 0,
+         p_initial_A_detected = 0,
+         p_initial_B = 1,
+         RT_nc = 1,
+         RT_c = 2, 
+         ITI = 0.1,
+         Win = 1,
+         Loss = 5,
+         TTime = 90) %>%
+  as.data.frame()%>%
+  mutate(earnings = earnings/max(earnings)) %>%
+  ggplot(aes(x = probabilities, y = earnings))+
+  geom_line()+
+  ylim(0,1)+
+  theme_classic()
+
+
+```
+
+```{r}
+
+monster2(p_A2B = 0.5,
+         p_B2A = 0.5,
+         p_initial_A = 0,
+         p_initial_A_detected = 1,
+         p_initial_B = 0,
+         RT_nc = 1,
+         RT_c = 1.7, 
+         ITI = 0.1,
+         Win = 1,
+         Loss = 10,
+         TTime = 90) %>%
+  as.data.frame()%>%
+  mutate(earnings = earnings/max(earnings)) %>%
+  ggplot(aes(x = probabilities, y = earnings))+
+  geom_line()+
+  ylim(0,1)+
+  theme_classic()
+
+
+```
+
+
+Let's make a grid
+
+```{r}
+
+grid <- expand.grid(p_A2B = seq(0.1, 0.1, by = 0.05),
+                    p_B2A = seq(0.1, 0.1, by = 0.05),
+                    RT_nc = seq(1, 1, by = 0.25),
+                    RT_abs_cost = seq(0.7, 0.7, by = 0.25),
+                    Win = seq(1, by = 1),
+                    Loss = c(1, 5, 10), #seq(1, 10, by = 2),
+                    ITI = c(0.1, 1))
+
+
+grid <- grid %>%
+  rowwise() %>%
+  mutate(RT_c = RT_nc + RT_abs_cost,
+         rel_cost = (RT_c - RT_nc)/RT_nc,
+         result = list(monster2(p_A2B = p_A2B,
+                                p_B2A = p_B2A, 
+                                p_initial_A = .5, 
+                                p_initial_A_detected = 0, 
+                                p_initial_B = .5, 
+                                Win = Win, 
+                                Loss = Loss, 
+                                RT_nc = RT_nc, 
+                                RT_c = RT_c, 
+                                ITI = ITI,
+                                TTime = 90) %>% as.data.frame()))
+
+beepr::beep()
+
+grid_unnested <- grid %>%
+  ungroup() %>%
+  mutate(group = 1:n())%>%
+  unnest(result) %>%
+  group_by(group) %>%
+  mutate(rel_reward = earnings/max(earnings),
+         is_max = rel_reward == 1) 
+
+ggplot(grid_unnested, aes(x = probabilities, y = rel_reward, group = group, color = Loss, fill = Loss, linetype = factor(ITI)))+
+  geom_line(lwd = 1.1)+
+  geom_point(data = grid_unnested %>% filter(is_max == 1), pch = 23, size = 3)+
+  #facet_grid(~ITI)+
+  scale_y_continuous(limits = c(0.5,1))+
+  scale_color_viridis_c(option = "inferno", end = 0.7)+
+  scale_fill_viridis_c(option = "inferno", end = 0.7)+
+  #scale_color_gradient2(low = "blue", high = "red", midpoint = mean(grid_unnested$Loss))+
+  theme_classic()
+
+```
+
+
+
+Let's make another grid
+
+```{r}
+
+grid <- expand.grid(p_A2B = seq(0.1, 0.1, by = 0.05),
+                    p_B2A = seq(0.1, 0.1, by = 0.05),
+                    RT_nc = seq(0.8, 0.8, by = 0.25),
+                    RT_abs_cost = seq(1.1, 1.1, by = 0.25),
+                    Win = seq(1, by = 1),
+                    Loss = c(2, 14, 25), #seq(1, 10, by = 2),
+                    ITI = c(0.1, 1))
+
+
+grid <- grid %>%
+  rowwise() %>%
+  mutate(RT_c = RT_nc + RT_abs_cost,
+         rel_cost = (RT_c - RT_nc)/RT_nc,
+         result = list(monster2(p_A2B = p_A2B,
+                                p_B2A = p_B2A, 
+                                p_initial_A = 0, 
+                                p_initial_A_detected = 0, 
+                                p_initial_B = 1, 
+                                Win = Win, 
+                                Loss = Loss, 
+                                RT_nc = RT_nc, 
+                                RT_c = RT_c, 
+                                ITI = ITI,
+                                TTime = 90) %>% as.data.frame()))
+
+beepr::beep()
+
+grid_unnested <- grid %>%
+  ungroup() %>%
+  mutate(group = 1:n())%>%
+  unnest(result) %>%
+  group_by(group) %>%
+  mutate(rel_reward = earnings/max(earnings),
+         is_max = rel_reward == 1) 
+
+ggplot(grid_unnested, aes(x = probabilities, y = rel_reward, group = group, color = Loss, fill = Loss, linetype = factor(ITI)))+
+  geom_line(lwd = 1.1)+
+  geom_point(data = grid_unnested %>% filter(is_max == 1), pch = 23, size = 3)+
+  #facet_grid(~ITI)+
+  scale_y_continuous(limits = c(0.5,1))+
+  scale_color_viridis_c(option = "inferno", end = 0.8)+
+  scale_fill_viridis_c(option = "inferno", end = 0.8)+
+  #scale_color_gradient2(low = "blue", high = "red", midpoint = mean(grid_unnested$Loss))+
+  theme_classic()
+
+```
+
+
+# Model 3: Integration of checking rates
+
+So to develop this further, I am separating the states out and include check rates. In essence, there are now 5 possible states, that combine the objective unknown state and the memory state - the memory state dictates the check rate that is being used currently. 
+
+* A detected with memory A (because you can only detect A when you check and therefore also update your memory)
+* A undetected with memory A (you missed an A state essentially for your memory to say A and check with the A rate)
+* A undetected with memory B (your checking with the B check rate)
+* B with memory A (you didn't "detect" the B state yet and are still checking with the A rate)
+* B with memory B (you detected the B state and are now checking with the B rate)
+
+Let's see what kind of predictions it makes.
+
+## Function to get markov states per trial
+
+```{r}
+markov_state <- function(mat_initial_state,
+                                 mat_transition,
+                                 n) {
+  
+  
+  mat_initial_state %*% (mat_transition %^% n) %>% 
+    as.data.frame() %>%
+    #rename(p_state_A = V1, p_state_A_detected = V2, p_state_B = V3) %>%
+    return()
+  
+}
+```
+
+
+## Function to return inital and transition matrices
+
+```{r}
+build_mats <- function(p_A2B = 0.1,
+                       p_B2A = 0.1, 
+                       cr_a = 0.2,
+                       cr_b = 0.2,
+                       start = "B_mB"){
+  
+  trans_mat <- matrix(0, 5, 5)
+  
+  # p_A2B <- 0.1
+  # p_B2A <- 0.1
+  # cr_a <- 0.1
+  # cr_b <- 0.01
+  
+  names <- c("Au_mA", "Au_mB", "Ad_mA", "B_mA", "B_mB")
+  
+  colnames(trans_mat) <- names
+  rownames(trans_mat) <- names
+  
+  trans_mat["Au_mA", "Au_mA"] <- (1 - p_A2B) * (1 - cr_a) #for it to remain undetected, I can't check
+  trans_mat["Au_mA", "Au_mB"] <- 0 #memory can't update from A to B without 
+  trans_mat["Au_mA", "Ad_mA"] <- (1 - p_A2B) * cr_a #for state to update from detected to undetected, you need to check
+  trans_mat["Au_mA", "B_mA"] <- p_A2B * (1 - cr_a) # state changes from A to B, but your memory remains the same (you don't check)
+  trans_mat["Au_mA", "B_mB"] <- p_A2B * cr_a #state changes from A to B, you check to update memory
+  
+  trans_mat["Au_mB", "Au_mA"] <- 0 #memory update impossible without checking 
+  trans_mat["Au_mB", "Au_mB"] <- (1 - p_A2B) * (1 - cr_b) #state is not allowed to change, and you dont check
+  trans_mat["Au_mB", "Ad_mA"] <- (1 - p_A2B) * cr_b # A state remains, you check
+  trans_mat["Au_mB", "B_mA"] <- 0 # impossible transition (can't update memory)
+  trans_mat["Au_mB", "B_mB"] <- p_A2B # it has to change to B, whether you check or not doesn't matter, the memory remains the same
+  
+  trans_mat["Ad_mA", "Au_mA"] <- 0 #impossible with just one transition
+  trans_mat["Ad_mA", "Au_mB"] <- 0 #if I were to check, the memory wouldnt update to B in this case
+  trans_mat["Ad_mA", "Ad_mA"] <- 1 - p_A2B #no matter whether you check or not, neither state nor memory change
+  trans_mat["Ad_mA", "B_mA"] <- p_A2B * (1 - cr_a) # state changes without noticing (no checking)
+  trans_mat["Ad_mA", "B_mB"] <- p_A2B * cr_a #(state chanegs and I update memory)
+  
+  trans_mat["B_mA", "Au_mA"] <- p_A2B * (1-cr_a) # state changes but you dont check (because otherwise state would be Ad)
+  trans_mat["B_mA", "Au_mB"] <- 0 #impossible memory transition
+  trans_mat["B_mA", "Ad_mA"] <- p_A2B * cr_a
+  trans_mat["B_mA", "B_mA"] <- (1 - p_B2A) * (1 - cr_a)
+  trans_mat["B_mA", "B_mB"] <- (1 - p_B2A) * cr_a
+  
+  trans_mat["B_mB", "Au_mA"] <- 0 #impossible to update memory from B to A if not also changing A undetected state to detected state
+  trans_mat["B_mB", "Au_mB"] <- p_B2A * (1 - cr_b) # state changes, memory doesnt get updated, therefore no check allowed
+  trans_mat["B_mB", "Ad_mA"] <- p_B2A * cr_b # state transitions AND I also check
+  trans_mat["B_mB", "B_mA"] <- 0 #impossible to update memory from B to A if state doesnt change
+  trans_mat["B_mB", "B_mB"] <- 1 - p_B2A #state doesnt change, regardless of whether i check or not
+  
+  initial_mat <- matrix(0, nrow = 1, ncol = 5)
+  colnames(initial_mat) <- names
+  
+  initial_mat[1, "Au_mA"] <- 0
+  initial_mat[1, "Au_mB"] <- 0
+  initial_mat[1, "Ad_mA"] <- 0
+  initial_mat[1, "B_mA"] <- 0
+  initial_mat[1, "B_mB"] <- 0
+  initial_mat[1, start] <- 1
+  
+  return(list(trans_mat = trans_mat,
+              initial_mat = initial_mat))
+}
+```
+
+
+## Get state transitions
+
+Here's a figure of state transitions. It shows the probability of any check (whether due to check rate A or B). It also shows the probability of each state being active. To simplify, I only show the interesting states.
+
+* total A: This is the thick red line and shows the objective reality. It is summing up the probabilities of being in States A undetected - Memory A, A undetected - Memory B, A detected - Memory A. This is just to show how this "portion" is split up into the different components, namely:
+  - A undetected (again ignoring memory state), red thin line
+  - A detected (green)
+  
+* B: again ignoring memory state, this replicated the objective reality of state B being active (blue)
+* missed: instantaneous probability of currently missing an A state (A undetected * PA2B)
+
+
+```{r}
+states5_over_trials <- data.frame(setup = 1) %>%
+  mutate(p_A2B = 0.1, 
+         p_B2A = 0.1, 
+         cr_a = list(cr_a = seq(0, 1, by = 0.01)),
+         cr_b = list(cr_b = seq(0, 1, by = 0.01)),
+         RT_nc = 0.6,
+         RT_c = 1.7,
+         ITI = 0.1,
+         Win = 1,
+         Loss = 10,
+         TTime = 90,
+         trial = list(1:(TTime/min(c(RT_nc, RT_c))))) %>%
+  unnest(trial) %>%
+  unnest(cr_a) %>%
+  unnest(cr_b) %>%
+  arrange(cr_a, cr_b, trial) %>%
+  rowwise() %>%
+  mutate(states = list(markov_state(mat_initial_state = build_mats(p_A2B = p_A2B, 
+                                                                   p_B2A = p_B2A, 
+                                                                   cr_a = cr_a, 
+                                                                   cr_b = cr_b, 
+                                                                   start = "B_mB")$initial_mat,
+                                    mat_transition = build_mats(p_A2B = p_A2B, 
+                                                                p_B2A = p_B2A, 
+                                                                cr_a = cr_a, 
+                                                                cr_b = cr_b, 
+                                                                start = "B_mB")$trans_mat, 
+                                    n = trial))) %>%
+  unnest(states) %>%
+  mutate(A_total = Au_mA + Au_mB + Ad_mA,
+         Au_total = Au_mA + Au_mB,
+         inst_miss = Au_total * p_A2B,
+         B_total = B_mA + B_mB,
+         Checks = (Au_mA + Ad_mA + B_mA) * cr_a + (Au_mB + B_mB) * cr_b,
+         label_cr_a = paste0("cr a: ", cr_a),
+         label_cr_b = paste0("cr b: ", cr_b),
+         expected_RT = RT_nc + Checks * (RT_c - RT_nc) + ITI,
+         expected_Rew = Win - (inst_miss * Loss)) %>%
+  group_by(cr_a, cr_b) %>%
+  mutate(cum_RT = cumsum(expected_RT),
+         cum_Rew = cumsum(expected_Rew))
+
+
+ggplot(states5_over_trials %>% filter(cr_a %% 0.20 == 0 & 
+                                      cr_b %% 0.20 == 0), aes(x = trial)) +
+  geom_line(aes(y = A_total, color = "A_total"), lwd = 1.1)+
+  geom_line(aes(y = Au_total, color = "Au_total"))+
+  geom_line(aes(y = inst_miss, color = "miss"), linetype = "11")+
+  geom_line(aes(y = B_total, color = "B_total"))+
+  geom_line(aes(y = Ad_mA, color = "A_detected"))+
+  geom_line(aes(y = Checks, color = "Checks"), linetype = "11")+
+  geom_hline(yintercept = 0)+
+  scale_color_manual(values = c("A_total" = "red",
+                                "Au_total" = "red",
+                                "miss" = "red",
+                                "B_total" = "blue",
+                                "A_detected" = "green",
+                                "Checks" = "black"),
+                     labels = c("Checks" = "Checks",
+                                "A_total" = "total A (sum of \nA undetected \nand A detected)\n",
+                                "Au_total" = "A undetected",
+                                "miss" = "missed",
+                                "B_total" = "B",
+                                "A_detected" = "A detected"),
+                     breaks = c("Checks", "A_total", "Au_total", "A_detected", "B_total", "miss"),
+                     name = "State")+
+  facet_grid(label_cr_a ~ label_cr_b)+
+  coord_cartesian(ylim = c(0, .6))+
+  labs(y = "p",
+       subtitle = paste0("Parameters: RTnc = ", states5_over_trials$RT_nc[1], 
+                         ", RTc = ", states5_over_trials$RT_c[1], 
+                         ", ITI = ", states5_over_trials$ITI[1],
+                         ", \nWin = ", states5_over_trials$Win[1], 
+                         ", Loss = ", states5_over_trials$Loss[1], 
+                         ", \nP(A2B) = ", states5_over_trials$p_A2B[1], 
+                         ", P(B2A) = ", states5_over_trials$p_B2A[1]))+
+  theme_classic()+
+  theme(legend.position = "left",
+        legend.direction = "vertical")
+
+#ggsave("5state.png", width = 10, height = 7, units = "in")
+```
+
+This looks beautiful! In the next step, I can assign partial RT costs (e. g., $RT_{\text{instantaneous}} = RT_{nc} + Check_{\text{instantaneous}} * (RT_{c} - RT_{\text{nc}}) + ITI$). I can do something similar with Rewards  $Reward_{\text{instantaneous}} = Win + P_{\text{Miss instantaneous}} * Loss$). I then just need to cumulatively add those up and cut off the block at the first trial that goes over 90 s. I can then generate a heatmap and even an optimality surface.
+
+
+```{r}
+
+payout <- states5_over_trials %>%
+  group_by(cr_a, cr_b) %>%
+  filter(cum_RT > TTime) %>%
+  slice(1)
+
+
+comp_reward_heat_plt <- ggplot(payout, aes(x = cr_a, y = cr_b, fill = cum_Rew))+
+  geom_tile()+
+  labs(title = "From Computation",
+       x = "Check Rate after Checking A",
+       y = "Check Rate after Checking B",
+       subtitle = paste0("Parameters: RTnc = ", states5_over_trials$RT_nc[1], 
+                         ", RTc = ", states5_over_trials$RT_c[1], 
+                         ", ITI = ", states5_over_trials$ITI[1],
+                         ", \nWin = ", states5_over_trials$Win[1], 
+                         ", Loss = ", states5_over_trials$Loss[1], 
+                         ", \nP(A2B) = ", states5_over_trials$p_A2B[1], 
+                         ", P(B2A) = ", states5_over_trials$p_B2A[1]))+
+  scale_fill_viridis(name = "Block\nReward")+
+  theme_classic()
+comp_reward_heat_plt
+
+
+payout_wide <- payout %>%
+  pivot_wider(names_from = cr_a, values_from = cum_Rew, id_cols = cr_b) %>%
+  column_to_rownames(var = "cr_b") %>%
+  as.matrix()
+
+x_vals <- as.numeric(colnames(payout_wide)) # cr_a values
+y_vals <- as.numeric(rownames(payout_wide)) # cr_b values
+
+
+surface0 <- payout_wide
+surface0[,] <- 0
+
+# 3. Build the 3D surface plot
+fig <- plot_ly(
+  x = ~x_vals, 
+  y = ~y_vals, 
+  z = ~payout_wide, 
+  type = "surface",
+  colorscale = "Viridis",  
+) %>%
+  add_surface(
+    x = ~x_vals,
+    y = ~y_vals,
+    z = ~surface0,
+    opacity = 0.5, # Make it semi-transparent so you can see the curve below it
+    colorscale = list(c(0, 1), c("gray", "gray")), # Flat gray color
+    showscale = FALSE, # Hide the color scale legend for the plane
+    name = "Zero Reward"
+  ) %>%
+  layout(
+    title = "\nComputation: Block Rewards given Check Strategies",
+    scene = list(
+      xaxis = list(title = "Check Rate after Checking A"),
+      yaxis = list(title = "Check Rate after Checking B"),
+      zaxis = list(title = "Block Reward")
+    )
+  ) %>%
+  colorbar(title = "Block\nReward")
+
+# Display the interactive plot
+fig
+
+```
+
+## Surface from simulation
+
+```{r}
+
+simulate2p <- readRDS("simulate2p.RDS")
+
+simulation <- simulate2p(Win = states5_over_trials$Win[1], 
+                         Loss = states5_over_trials$Loss[1], 
+                         RT_nc = states5_over_trials$RT_nc[1], 
+                         RT_c = states5_over_trials$RT_c[1], 
+                         ITI = states5_over_trials$ITI[1], 
+                         p_A2B = states5_over_trials$p_A2B[1], 
+                         p_B2A = states5_over_trials$p_B2A[1], 
+                         TTime = states5_over_trials$TTime[1], 
+                         N_sim = 100, 
+                         p_initial_A = 0, 
+                         p_initial_B = 1, 
+                         p_initial_A_detected = 0)
+
+
+
+simulation_summary <- lapply(simulation, function(y){
+  y$iteration_summary
+}) %>% bind_rows %>%
+  group_by(cr_a, cr_b) %>%
+  summarize(Rew_cum = mean(Rew_cum))
+
+simulation_out <- simulation_summary %>%
+  rename(Simulated_Rew = Rew_cum) %>%
+  mutate(cr_a = round(cr_a, 2),
+         cr_b = round(cr_b, 2))
+
+sim_reward_heat_plt <- ggplot(simulation_out, aes(x = cr_a, y = cr_b, fill = Simulated_Rew))+
+  geom_tile()+
+  labs(title = "From Simulation",
+       x = "Check Rate after Checking A",
+       y = "Check Rate after Checking B",
+       subtitle = paste0("Parameters: RTnc = ", states5_over_trials$RT_nc[1], 
+                         ", RTc = ", states5_over_trials$RT_c[1], 
+                         ", ITI = ", states5_over_trials$ITI[1],
+                         ", \nWin = ", states5_over_trials$Win[1], 
+                         ", Loss = ", states5_over_trials$Loss[1], 
+                         ", \nP(A2B) = ", states5_over_trials$p_A2B[1], 
+                         ", P(B2A) = ", states5_over_trials$p_B2A[1]))+
+  scale_fill_viridis(name = "Block\nReward")+
+  theme_classic()
+
+cowplot::plot_grid(comp_reward_heat_plt, sim_reward_heat_plt, nrow = 1)
+
+simulation_wide <- simulation_out %>%
+  pivot_wider(names_from = cr_a, values_from = Simulated_Rew, id_cols = cr_b) %>%
+  column_to_rownames(var = "cr_b") %>%
+  as.matrix()
+
+x_vals <- as.numeric(colnames(simulation_wide)) # cr_a values
+y_vals <- as.numeric(rownames(simulation_wide)) # cr_b values
+
+
+surface0 <- simulation_wide
+surface0[,] <- 0
+
+# 3. Build the 3D surface plot
+fig <- plot_ly(
+  x = ~x_vals, 
+  y = ~y_vals, 
+  z = ~simulation_wide, 
+  type = "surface",
+  colorscale = "Viridis",  
+) %>%
+  add_surface(
+    x = ~x_vals,
+    y = ~y_vals,
+    z = ~surface0,
+    opacity = 0.5, # Make it semi-transparent so you can see the curve below it
+    colorscale = list(c(0, 1), c("gray", "gray")), # Flat gray color
+    showscale = FALSE, # Hide the color scale legend for the plane
+    name = "Zero Reward"
+  ) %>%
+  layout(
+    title = "\nSimulation: Block Rewards given Check Strategies",
+    scene = list(
+      xaxis = list(title = "Check Rate after Checking A"),
+      yaxis = list(title = "Check Rate after Checking B"),
+      zaxis = list(title = "Block Reward")
+    )
+  ) %>%
+  colorbar(title = "Block\nReward")
+
+# Display the interactive plot
+fig
+
+
+```
+
+
+## How does it converge with the simulation? 
+
+```{r}
+
+
+
+compute_out <- payout %>%
+ rename(Computed_Rew = cum_Rew) %>%
+  select(cr_a, cr_b, Computed_Rew) %>%
+  mutate(cr_a = round(cr_a, 2),
+         cr_b = round(cr_b, 2))
+
+
+compare <- left_join(simulation_out, compute_out, by = c("cr_a", "cr_b"))
+
+ggplot(compare, aes(x = Computed_Rew, y = Simulated_Rew))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 1)+
+  geom_smooth(method = "lm")+
+  labs(x = "Computed", y = "Simulated")+
+  theme_classic()
+
+
+cor(compare$Simulated_Rew, compare$Computed_Rew, use = "pairwise.complete.obs")
+
+```
+
+
+
+
+
+
+
+
 
