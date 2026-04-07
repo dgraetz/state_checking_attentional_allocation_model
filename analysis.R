@@ -19,131 +19,123 @@ data <- data %>%
          missed_factor = ifelse(last_trial_on_state == 1 & Detected_current_state == 0, 1, 0),
          Monster_loss =  missed_factor * B_Loss,
          current_reward = Task_rew - Monster_loss,
-         current_reward = cumsum(current_reward))
+         current_reward = cumsum(current_reward)) %>%
+  ungroup() %>%
+  mutate(ITI = ifelse(ID == 100, 0.1, ITI),
+         Placeh = ifelse(ID == 100, 0, Placeh),
+         Placeh = factor(Placeh),
+         ITI = factor(ITI),
+         B_Loss = factor(B_Loss),
+         ID = factor(ID))
 
 
-agg <- data %>%
-  group_by(ID, Block, B_Loss) %>%
+agg_ID <- data %>%
+  group_by(ID, Block, B_Loss, ITI, Placeh) %>%
   summarize(RT_task_checked = mean(RT_task[State_checked == 1]),
-            RT_task_checked_response = mean(RT_task[State_checked == 1 & Response_state != ""]),
-            RT_task_not_checked = mean(RT_task[State_checked == 0]),
+            RT_task_nc = mean(RT_task[State_checked == 0]),
             Check = mean(State_checked)) %>%
-  group_by(ID, B_Loss) %>%
-  summarize(RT_task_checked = mean(RT_task_checked),
-            RT_task_checked_response = mean(RT_task_checked_response),
-            RT_task_not_checked = mean(RT_task_not_checked),
+  group_by(ID, B_Loss, ITI, Placeh) %>%
+  summarize(RT_task_checked_M = mean(RT_task_checked),
+            RT_task_checked_SD= sd(RT_task_checked),
+            RT_task_nc_M = mean(RT_task_nc),
+            RT_task_nc_SD = sd(RT_task_nc),
+            Check = mean(Check),
+            abs_cost = RT_task_checked_M - RT_task_nc_M)
+
+
+agg <- agg_ID %>%
+  group_by(B_Loss, ITI, Placeh) %>%
+  summarize(RT_task_checked_M = mean(RT_task_checked_M),
+            RT_task_nc_M = mean(RT_task_nc_M),
             Check = mean(Check))
 
-agg
+# In Loss = 2, you should not check; 
 
-ggplot(agg, aes(x = B_Loss, y = Check, group = 1))+
+# At Loss = 10
+# cr_a  cr_b is_max is_max_same
+# <dbl> <dbl>  <dbl>       <dbl>
+#   1 0.1   0.225      1           0
+#   2 0.175 0.175      0           1
+
+
+# At Loss = 30
+# cr_a  cr_b is_max is_max_same
+# <dbl> <dbl>  <dbl>       <dbl>
+#   1  0.25 0.575      1           0
+#   2  0.45 0.45       0           1
+
+
+
+ggplot(agg_ID, aes(x = B_Loss, y = Check, group = interaction(ID, Placeh), color = ID, linetype = Placeh))+
+  geom_line()+
+  geom_line(data = agg, aes(x = B_Loss, y = Check, group = interaction(Placeh), linetype = Placeh), inherit.aes = FALSE, lwd = 1.5)+
+  facet_wrap(~ITI)+
+  theme_classic()
+
+
+
+agg_ID_ph_loss <- data %>%
+  group_by(ID, Placeh, B_Loss) %>%
+  summarize(Check = mean(State_checked))
+
+
+ggplot(agg_ID_ph_loss, aes(x = B_Loss, y = Check, group = interaction(ID, Placeh), color =ID, linetype = factor(Placeh)))+
+  geom_line()+
+  theme_classic()
+
+
+agg_ID_iti <- data %>%
+  group_by(ID, ITI) %>%
+  summarize(Check = mean(State_checked))
+
+
+ggplot(agg_ID_iti, aes(x = ITI, y = Check, group = ID, color = ID))+
   geom_line()+
   theme_classic()
 
 
 
-cost_agg <- data %>%
-  group_by(ID, Block, B_Loss) %>%
-  summarize(RT_task_checked = mean(RT_task[State_checked == 1]),
-            RT_task_not_checked = mean(RT_task[State_checked == 0]),
-            Check = mean(State_checked),
-            Cost = (RT_task_checked - RT_task_not_checked)/RT_task_not_checked,
-            earnings = current_reward[n()])
 
-ggplot(cost_agg, aes(x = Cost, y = Check, color = B_Loss))+
-  geom_point()+
-  geom_smooth(method = "lm")+
+# Let's look at trial sequences
+
+data %>%
+  group_by(ID, Trial) %>%
+  summarize(p_On = mean(StateOn)) %>%
+  group_by(Trial) %>%
+  summarize(p_On = mean(p_On)) %>%
+  ggplot(aes(x = Trial))+
+  geom_line(aes(y = p_On))+
+  geom_line(aes(y = 1-p_On))+
+  scale_y_continuous(limits = c(0, 1))+
   theme_classic()
 
 
-source("my_sim3.R")
 
-
-# 1. Setup the cluster
-# Detect cores and leave one free for the OS
-library(foreach)
-library(doParallel)
-n_cores <- parallel::detectCores() - 1 
-cl <- makeCluster(n_cores)
-registerDoParallel(cl)
-
-# 2. Execute the parallel loop
-# We store the output of the loop into a list called 'results_list'
-results_list <- foreach(i = 1:nrow(cost_agg), 
-                        .packages = c('tidyverse'), 
-                        .export = c('sim_sidetask_vec')) %dopar% {
-                          
-                          crs <- seq(0, 1, 0.01)
-                          opt <- list()
-                          
-                          # Inner loop runs sequentially within each worker (usually faster this way)
-                          for (j in 1:length(crs)){
-                            
-                            # Note: Accessing cost_agg values directly by index i
-                            opt[[j]] <- sim_sidetask_vec(RT_A_only = cost_agg$RT_task_not_checked[i],
-                                                         RT_A_B_check = cost_agg$RT_task_checked[i], 
-                                                         RT_A_B_response = cost_agg$RT_task_checked[i], 
-                                                         ITI = 0.2, 
-                                                         Win_A = 1, 
-                                                         Loss_A = 0, 
-                                                         Win_B = 0, 
-                                                         Loss_B = cost_agg$B_Loss[i] %>% as.character() %>% as.numeric(), 
-                                                         p_go_on = 0.1, 
-                                                         p_go_off = 0.1, 
-                                                         Time = 90, 
-                                                         cr = crs[j], 
-                                                         reps = 500) %>%
-                              mutate(cr = crs[j])
-                          }
-                          
-                          # Process the data for this specific row (i)
-                          # The result of this block is what gets returned to 'results_list'
-                          opt %>%
-                            bind_rows() %>%
-                            group_by(rep, cr) %>%
-                            summarize(Rew_total = Rew_total[n()], .groups = "drop_last") %>%
-                            group_by(cr) %>%
-                            summarize(Rew_total = mean(Rew_total), .groups = "drop")
-                        }
-
-stopCluster(cl)
-
-# 4. Assign the results back to your dataframe
-# Since foreach returns a list, we can assign it directly to the list-column
-cost_agg$optimality <- results_list
-
-
-cost_agg2 <- cost_agg %>%
-  unnest(optimality) %>%
+check_by_state_ID <- data %>%
   group_by(ID, Block) %>%
-  mutate(opt_check = cr[which.max(Rew_total)],
-         opt_earnings = max(Rew_total),
-         predicted_earnings = Rew_total[which.min(abs(Check - cr))],
-         rel_Rew_total = Rew_total/max(Rew_total))
+  mutate(check_group = cumsum(State_checked)) %>%
+  group_by(ID, Block, check_group) %>%
+  mutate(state_at_check = StateOn[1]) %>%
+  filter(check_group != 0) %>%
+  group_by(ID, Block, B_Loss, check_group, state_at_check) %>%  
+  summarize(avg_run_length = n()) %>%
+  group_by(ID, Block, B_Loss, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length)) %>%
+  group_by(ID, B_Loss, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length),
+            cc = 1/avg_run_length) %>%
+  mutate(state_at_check = factor(state_at_check))
 
-ggplot(cost_agg2, aes(x = cr, y = Rew_total, group = Block, color = factor(B_Loss)))+
+
+check_by_state_agg <- check_by_state_ID %>%
+  group_by(B_Loss, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length),
+            cc = 1/avg_run_length)
+
+
+ggplot(check_by_state_ID, aes(x = state_at_check, y = cc, group = interaction(ID, B_Loss), color = B_Loss))+
   geom_line()+
-  geom_point(data = cost_agg2, aes(x = opt_check, opt_earnings), pch = 5, size = 4)+
-  geom_point(data = cost_agg2, aes(x = Check, earnings), pch = 1, size = 3)+
-  facet_wrap(~B_Loss, ncol = 1)+
-  scale_color_discrete(name = "Loss cond")+
-  theme_classic()
-
-ggplot(cost_agg2, aes(x = cr, y = rel_Rew_total, group = Block))+
-  geom_line()+
-  facet_wrap(~B_Loss, ncol = 1)+
-  coord_cartesian(ylim = c(0, 1))+
-  theme_classic()
-
-cost_agg_summary <- cost_agg2B_Losscost_agg_summary <- cost_agg2 %>%
-  group_by(ID, Block) %>%
-  slice(1)
-
-
-ggplot(cost_agg_summary, aes(x = predicted_earnings, y = earnings))+
-  geom_point()+
-  geom_smooth(method = "lm")+
+  geom_line(data = check_by_state_agg, aes(group = B_Loss), lwd = 2)+
   theme_classic()
 
 
-cor(cost_agg_summary$predicted_earnings, cost_agg_summary$earnings)

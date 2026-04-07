@@ -1,0 +1,957 @@
+---
+title: "Consolidated Modeling"
+author:
+  - name: "Dominik Graetz"
+    affiliation: "University of Oregon"
+    author:
+  - name: "Ulrich Mayr"
+    affiliation: "University of Oregon"
+output: 
+  html_document:
+    toc: true       
+    toc_float: true
+    toc_depth: 6
+    number_sections: true
+date: "2026-04-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, out.width = "100%")
+```
+
+
+```{r}
+library(tidyverse)
+library(expm)
+library(viridis)
+library(plotly)
+```
+
+# What is this about?
+
+We are describing here a normative model for decisions between attending to a primary rewarded task and checking in on a state that, if missed, is associated with low to significant losses. Specifically, this is implemented in an eye-tracking experiment where people can earn points for correct trials of a simple dot motion task with high coherence in which participants have to indicate the direction of motions. From trial to trial, a hidden state can turn on or off with know probabilities. To check in on the state, the participant has to move their eyes to the top of the screen and, in a gaze-contingent manner, the status of the state is revealed. When the state is off, a picture of an empty forest is displayed. When the state is on, a monster is displayed in the forest. A state counts as detected when the participants responds with the 'kill' keypress.
+
+However, checking unnecessarily frequently will yield cost a significant amount of time. Because blocks are time-limited, this reflects an opportunity cost, because during unnecessary checks, more trials could be completed. On the other hand, checking the state very little may incur high losses that outweigh the time savings. The decision therefore primarily depends on the time costs of checking the state as well as the reward structure (wins and losses per correct trials and missed states, respectively). 
+
+The goal in this file below is to outline how we developed this model.
+
+# Defining the markov process
+
+To model this scenario, we need the probability that you're in a given state at trial $t$. We can understand the stochastic turning on/off as a markov process with defined probabilities. We can then calculate the state at any given trial. This can be done by multiplying the initial state vector (probabilities for starting in an on vs. off state) with the transition matrix. 
+
+
+$$\pi_{r} = \pi_{0} P^t$$
+wherein $\pi_{0} = \text{initial state vector}$,
+$P = \text{transition matrix}$.
+
+
+# A simplified version
+
+## Idea
+
+We're defining here 3 possible markov states. For brevity, I will refer to the on state as "A" and the off state as "B":
+
+* $A1$ - A detected (you can only detect A when you check)
+* $A0$ - A undetected
+* $B$ - B 
+
+The initial state vector looks like so:
+
+$$ \pi_{0} = \begin{bmatrix}
+P_{A1} & P_{A0} & P_{B} \end{bmatrix} $$
+
+The transition matrix contains probabilities of transitions to the different states. It is defined by the probabilities of states turning on ($P_{B \to A}$) and off ($P_{A \to B}$) in combination with a check rate $cr$ to allow the transition between $A0$ (A undetected) and $A1$ (A detected). Note that one cell is set to 0 where a transition is not possible ($P_{A1 \to A0}$) - the state cannot switch from A detected to undetected (it has to go through state B first).
+
+
+$$ 
+\begin{aligned} 
+P &= \begin{bmatrix}
+P_{A1 \to A1} & P_{A1 \to A0} & P_{A1 \to B} \\
+P_{A0 \to A1} & P_{A0 \to A0} & P_{A0 \to B} \\
+P_{B \to A1} & P_{B \to A0} & P_{B \to B}
+\end{bmatrix} \\
+\\
+&= \begin{bmatrix}
+(1 - P_{A \to B}) & 0 & P_{A \to B} \\
+(1 - P_{A \to B})cr & (1 - P_{A \to B})(1 - cr) & P_{A \to B} \\
+P_{B \to A}cr & P_{B \to A}(1 - cr) & 1 - P_{B \to A}
+\end{bmatrix} 
+\end{aligned} 
+$$
+
+## R Functions
+
+From this model, we can calculate the average probability of the respective states given a checking strategy. 
+
+```{r}
+
+build_mats3 <- function(p_A2B = 0.1,
+                        p_B2A = 0.1, 
+                        cr   = 0.2,
+                        start = "B") {
+  
+  names <- c("Ad", "Au", "B")
+  
+  trans_mat <- matrix(0, nrow = 3, ncol = 3,
+                      dimnames = list(names, names))
+  
+  # From Ad (A detected)
+  trans_mat["Ad", "Ad"] <- 1 - p_A2B          # stay A, no memory update needed
+  trans_mat["Ad", "Au"] <- 0                   # can't go from detected to undetected directly
+  trans_mat["Ad", "B"]  <- p_A2B              # A turns off
+  
+  # From Au (A undetected)
+  trans_mat["Au", "Ad"] <- (1 - p_A2B) * cr   # A stays on and you check -> detected
+  trans_mat["Au", "Au"] <- (1 - p_A2B) * (1 - cr)  # A stays on, no check -> still undetected
+  trans_mat["Au", "B"]  <- p_A2B              # A turns off
+  
+  # From B
+  trans_mat["B", "Ad"]  <- p_B2A * cr         # B turns on and you check -> detected
+  trans_mat["B", "Au"]  <- p_B2A * (1 - cr)   # B turns on, no check -> undetected
+  trans_mat["B", "B"]   <- 1 - p_B2A          # stay B
+  
+  # Initial state vector
+  initial_mat <- matrix(0, nrow = 1, ncol = 3,
+                        dimnames = list(NULL, names))
+  initial_mat[1, start] <- 1
+  
+  return(list(trans_mat  = trans_mat,
+              initial_mat = initial_mat))
+}
+
+
+markov_state <- function(mat_initial_state,
+                         mat_transition,
+                         n) {
+  
+  mat_initial_state %*% (mat_transition %^% n) %>% 
+    as.data.frame() %>%
+    return()
+  
+}
+
+```
+
+We can now generate a figure displaying how the probabilities of the respective states change as a function of trial number. We can also calculate the probability of the "objective A state" (regardless of whether it was detected or not, the objective reality - so the probability of A as it was programmed before the block starts). This is simply the sum of all possible A states (i. e., $P_{\text{A total}} = P_{A0} + P_{A1}$). More importantly we can calculate the probability of a miss state as $P_{\text{miss}} = P_{A0} * P_{A \to B}$.
+
+The calculations for the plot assume the standard parameters:
+
+$P_{A \to B} = 0.1$
+
+$P_{B \to A} = 0.1$
+
+and that the block starts with the B (off) state. The panels show different check rates. Notice that as the check rate increases, a greater proportion of A states is being detected, which naturally yields a lower rate of misses.
+
+```{r}
+get_states3_crs <- function(p_A2B = 0.1, 
+                            p_B2A = 0.1, 
+                            crs = seq(0, 1, by = 0.01),
+                            N_Trials = 90){
+  
+  
+  data.frame(setup = 1) %>%
+    mutate(trial = list(0:N_Trials),
+           p_A2B = p_A2B, 
+           p_B2A = p_B2A, 
+           cr = list(crs),
+    ) %>%
+    select(-setup) %>%
+    unnest(cr) %>%
+    rowwise() %>%
+    mutate(mats = list(build_mats3(p_A2B = p_A2B, 
+                                   p_B2A = p_B2A, 
+                                   cr = cr,
+                                   start = "B"))) %>%
+    unnest(trial) %>%
+    rowwise() %>%
+    arrange(cr, trial) %>%
+    mutate(states = list(markov_state(mat_initial_state = mats$initial_mat,
+                                      mat_transition = mats$trans_mat, 
+                                      n = trial))) %>%
+    ungroup() %>%
+    select(-mats) %>%
+    #mutate(states = as.data.frame(states))
+    unnest(states) %>%
+    mutate(A_total = Au + Ad,
+           B_total = B,
+           inst_miss = Au * p_A2B,
+           Checks = cr)
+  
+}
+```
+
+## Probability of States
+
+```{r}
+state3_ex <- get_states3_crs(p_A2B = 0.1,
+                             p_B2A = 0.1, 
+                             crs = seq(0, 1, by = 0.01), 
+                             N_Trials = 150)
+
+
+
+
+ggplot(state3_ex %>% filter(cr %in% seq(0, 1, by = 0.25)), aes(x = trial)) +
+  geom_line(aes(y = A_total, color = "A"), lwd = 2, alpha = 0.6)+
+  geom_line(aes(y = Ad, color = "Ad"))+
+  geom_line(aes(y = Au, color = "Au"))+
+  geom_line(aes(y = B, color = "B"), lwd = 2, alpha = 0.6)+
+  geom_line(aes(y = inst_miss, color = "missed"), linetype = "21")+
+  coord_cartesian(xlim = c(0, 30))+
+  facet_grid(~ cr)+
+  scale_color_manual(name = "State", 
+                     labels = c("A" = "A total",
+                                "Ad" = "A detected",
+                                "Au" = "A undetected",
+                                "B" = "B",
+                                "inst_miss" = "missed"),
+                     values = c("A" = "orange",
+                                "Ad" = "green",
+                                "Au" = "red",
+                                "B" = "blue",
+                                "missed" = "red"))+
+  labs(x = "Trial Number",
+       y = "Probability")+
+  theme_classic()
+
+
+```
+
+## Reward calculation
+
+From this model, we can define the payout and determine the best checking strategy.
+
+$$ RT_{\text{mean}} = ITI + (1-cr) * RT_{\text{not checking}} + cr * RT_{\text{checking}}$$
+
+Additionally, given that 
+$$P_{\text{miss}} = P_{A0} * P_{A \to B}$$
+we can calculate the expected reward per trial as a function of the guaranteed gains $g$ (we assume 100 % accuracy for such a simple task) and losses $l$ multiplied by the respective probability.
+
+$$Reward_{\text{trial}} = g + P_{\text{miss(trial)}} * l$$
+We then calculate the cumulative RT, and cut off the block when $RT_\text{cumulative} > TotalTime$. However, when rewards are later plotted as function of check rates, they are not smooth. This is because dependent on the check rate, the reward of an entire trial is included if it starts just before the block ends. 
+To calculate the exact rewards for a given block duration and obtain a smooth function, we adjust the reward calculated for the last trial. We do this by calculating the proportion of the last trial completed at $TotalTime$ and multiply this number with the rewards of the last trial.
+
+```{r}
+get_payout3 <- function(states,
+                        RT_c,
+                        RT_nc,
+                        ITI,
+                        Win,
+                        Loss,
+                        TTime){
+  
+  
+  # states <- x$states[1][[1]]
+  # RT_c = 1
+  # RT_nc= 1
+  # ITI =1
+  # Win= 1
+  # Loss =1
+  # TTime =1
+  
+  Loss = abs(Loss)
+  
+  states %>%
+    filter(trial > 0) %>%
+    mutate(expected_RT = RT_nc + Checks * (RT_c - RT_nc) + ITI,
+           expected_Rew = Win - (inst_miss * Loss)) %>%
+    group_by(cr) %>%
+    mutate(cum_RT = cumsum(expected_RT),
+           cum_Rew = cumsum(expected_Rew)) %>%
+    filter(cum_RT > TTime) %>%
+    slice(1) %>%
+    ungroup() %>%
+    mutate(RT_correction = cum_RT - expected_RT, # subtract current RT
+           Time_left = TTime - RT_correction, #how much time was left from previous trial to block end
+           p_Trial_completed = Time_left/expected_RT, #this is the proportion of the last trial that was completed
+           Rew_corrected = cum_Rew - ((1 - p_Trial_completed) * expected_Rew),#to correct, I am subtracting the reward associated with the incomplete portion of the trial 
+           is_max = ifelse(Rew_corrected == max(Rew_corrected), 1, 0)) %>%
+    select(cr, Rew_corrected, is_max) %>%
+    return()
+  
+}
+
+
+payout3 <- get_payout3(states = state3_ex, 
+                       RT_nc = 0.6, 
+                       RT_c = 1.5, 
+                       ITI = 0.1, 
+                       Win = 1, 
+                       Loss = 80, 
+                       TTime = 90) %>%
+  mutate(rel_reward = Rew_corrected/max(Rew_corrected))
+
+payout3_state_plt <- ggplot(payout3, aes(x = cr, y = rel_reward))+
+  geom_line()+
+  geom_point(data = payout3 %>% filter(is_max == 1), pch = 23, size = 3)+
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))+
+  labs(x = "Check Rate", y = "Relative Reward")+
+  theme_classic()
+payout3_state_plt
+```
+
+
+# A more complex model
+
+## Idea
+
+A rational observer should also check with a different check rate dependent on the information obtained during the most recent check. To implement differential check rates, we have to use a markov model with 5 states. 
+
+* $A1MA$ - A detected given memory state being A
+* $A0MA$ - A undetected given memory state being A (you missed an A state essentially for your memory to say A and check with the A rate)
+* $A0MB$ - A undetected given memory state being B (your checking with the B check rate)
+* $BMA$ - B given memory state being A (you didn't "detect" the B state yet and are still checking with the A rate)
+* $BMB$ - B given memory state being B (you detected the B state and are now checking with the B rate)
+
+You might say: For A0 and B states, we have separate states dependent on the "memory state" and that for the {A detected} state the {A1MB} state is missing. Note that we don't need a 6 state model because you can only detect A when you check and therefore also have to update your memory.
+
+The initial state vector looks like so:
+
+$$ \pi_{0} = \begin{bmatrix}
+P_{A1MA} & P_{A0MA} & P_{A0MB} & P_{BMA} & P_{BMB} \end{bmatrix} $$
+
+
+For the transition matrix things escalate a little and it expands into a 5 x 5 matrix. Nevertheless, I think it's useful to spell it out. It is defined by the probabilities of states turning on ($P_{B \to A}$) and off ($P_{A \to B}$) in combination with potentially different check rates given the current "memory state" (i. e., the information obtained from the last check) - these are the parameters $cr_a$ (check rate given that during the last check the state was on) and $cr_b$ (check rate given that during the last check the state was off). Note that some cells are set to 0 where transitions are not possible. For example, an state cannot turn from on detected to on undetected directly ($P_{A1MA \to A0MA} = 0$). As another example, $P_{A0MA \to A0MB} = 0$ because the model assumes that you cannot update your memory from A to B if the state remains the same.
+
+
+
+$$ \begin{aligned} P = \begin{bmatrix}
+P_{A1MA \to A1MA} & P_{A1MA \to A0MA} & P_{A1MA \to A0MB} & P_{A1MA \to BMA} & P_{A1MA \to BMB} \\
+P_{A0MA \to A1MA} & P_{A0MA \to A0MA} & P_{A0MA \to A0MB} & P_{A0MA \to BMA} & P_{A0MA \to BMB} \\
+P_{A0MB \to A1MA} & P_{A0MB \to A0MA} & P_{A0MB \to A0MB} & P_{A0MB \to BMA} & P_{A0MB \to BMB} \\
+P_{BMA \to A1MA} & P_{BMA \to A0MA} & P_{BMA \to A0MB} & P_{BMA \to BMA} & P_{BMA \to BMB} \\
+P_{BMB \to A1MA} & P_{BMB \to A0MA} & P_{BMB \to A0MB} & P_{BMB \to BMA} & P_{BMB \to BMB}
+\end{bmatrix} \\
+= \begin{bmatrix}
+1 - P_{A \to B} & 0 & 0 & P_{A \to B}(1 - cr_a) & P_{A \to B}cr_a \\
+(1 - P_{A \to B})cr_a & (1 - P_{A \to B})(1 - cr_a) & 0 & P_{A \to B}(1 - cr_a) & P_{A \to B}cr_a \\
+(1 - P_{A \to B})cr_b & 0 & (1 - P_{A \to B})(1 - cr_b) & 0 & P_{A \to B} \\
+P_{B \to A}cr_a & P_{B \to A}(1 - cr_a) & 0 & (1 - P_{B \to A})(1 - cr_a) & (1 - P_{B \to A})cr_a \\
+P_{B \to A}cr_b & 0 & P_{B \to A}(1 - cr_b) & 0 & 1 - P_{B \to A}
+\end{bmatrix} 
+\end{aligned} $$
+
+
+
+## R Functions
+
+```{r}
+build_mats5 <- function(p_A2B = 0.1,
+                        p_B2A = 0.1, 
+                        cr_a = 0.2,
+                        cr_b = 0.2,
+                        start = "B_mB"){
+  
+  trans_mat <- matrix(0, 5, 5)
+  
+  # p_A2B <- 0.1
+  # p_B2A <- 0.1
+  # cr_a <- 0.1
+  # cr_b <- 0.01
+  
+  names <- c("Au_mA", "Au_mB", "Ad_mA", "B_mA", "B_mB")
+  
+  colnames(trans_mat) <- names
+  rownames(trans_mat) <- names
+  
+  trans_mat["Au_mA", "Au_mA"] <- (1 - p_A2B) * (1 - cr_a) #for it to remain undetected, I can't check
+  trans_mat["Au_mA", "Au_mB"] <- 0 #memory can't update from A to B without 
+  trans_mat["Au_mA", "Ad_mA"] <- (1 - p_A2B) * cr_a #for state to update from detected to undetected, you need to check
+  trans_mat["Au_mA", "B_mA"] <- p_A2B * (1 - cr_a) # state changes from A to B, but your memory remains the same (you don't check)
+  trans_mat["Au_mA", "B_mB"] <- p_A2B * cr_a #state changes from A to B, you check to update memory
+  
+  trans_mat["Au_mB", "Au_mA"] <- 0 #memory update impossible without checking 
+  trans_mat["Au_mB", "Au_mB"] <- (1 - p_A2B) * (1 - cr_b) #state is not allowed to change, and you dont check
+  trans_mat["Au_mB", "Ad_mA"] <- (1 - p_A2B) * cr_b # A state remains, you check
+  trans_mat["Au_mB", "B_mA"] <- 0 # impossible transition (can't update memory)
+  trans_mat["Au_mB", "B_mB"] <- p_A2B # it has to change to B, whether you check or not doesn't matter, the memory remains the same
+  
+  trans_mat["Ad_mA", "Au_mA"] <- 0 #impossible with just one transition
+  trans_mat["Ad_mA", "Au_mB"] <- 0 #if I were to check, the memory wouldnt update to B in this case
+  trans_mat["Ad_mA", "Ad_mA"] <- 1 - p_A2B #no matter whether you check or not, neither state nor memory change
+  trans_mat["Ad_mA", "B_mA"] <- p_A2B * (1 - cr_a) # state changes without noticing (no checking)
+  trans_mat["Ad_mA", "B_mB"] <- p_A2B * cr_a #(state chanegs and I update memory)
+  
+  trans_mat["B_mA", "Au_mA"] <- p_B2A * (1-cr_a) # state changes but you dont check (because otherwise state would be Ad)
+  trans_mat["B_mA", "Au_mB"] <- 0 #impossible memory transition
+  trans_mat["B_mA", "Ad_mA"] <- p_B2A * cr_a
+  trans_mat["B_mA", "B_mA"] <- (1 - p_B2A) * (1 - cr_a)
+  trans_mat["B_mA", "B_mB"] <- (1 - p_B2A) * cr_a
+  
+  trans_mat["B_mB", "Au_mA"] <- 0 #impossible to update memory from B to A if not also changing A undetected state to detected state
+  trans_mat["B_mB", "Au_mB"] <- p_B2A * (1 - cr_b) # state changes, memory doesnt get updated, therefore no check allowed
+  trans_mat["B_mB", "Ad_mA"] <- p_B2A * cr_b # state transitions AND I also check
+  trans_mat["B_mB", "B_mA"] <- 0 #impossible to update memory from B to A if state doesnt change
+  trans_mat["B_mB", "B_mB"] <- 1 - p_B2A #state doesnt change, regardless of whether i check or not
+  
+  initial_mat <- matrix(0, nrow = 1, ncol = 5)
+  colnames(initial_mat) <- names
+  
+  initial_mat[1, "Au_mA"] <- 0
+  initial_mat[1, "Au_mB"] <- 0
+  initial_mat[1, "Ad_mA"] <- 0
+  initial_mat[1, "B_mA"] <- 0
+  initial_mat[1, "B_mB"] <- 0
+  initial_mat[1, start] <- 1
+  
+  return(list(trans_mat = trans_mat,
+              initial_mat = initial_mat))
+}
+
+
+get_states5_crgrid <- function(p_A2B = 0.1, 
+                               p_B2A = 0.1, 
+                               cr_grid,
+                               N_Trials = 90){
+  
+  
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # cr_a = seq(0, 1, by = 0.01)
+  # cr_b = seq(0, 1, by = 0.01)
+  # RT_nc = 0.5
+  # RT_c = 1.5
+  # ITI = 0.1
+  # Win = 1
+  # Loss = 10
+  # TTime = 90
+  #N_Trials = ceiling(TTime/RT_nc)
+  
+  data.frame(setup = 1) %>%
+    mutate(trial = list(0:N_Trials),
+           p_A2B = p_A2B, 
+           p_B2A = p_B2A, 
+           cr_a = list(cr_a = cr_grid$cr_a),
+           cr_b = list(cr_b = cr_grid$cr_b),
+    ) %>%
+    select(-setup) %>%
+    unnest(cr_a) %>%
+    unnest(cr_b) %>%
+    rowwise() %>%
+    mutate(mats = list(build_mats5(p_A2B = p_A2B, 
+                                   p_B2A = p_B2A, 
+                                   cr_a = cr_a, 
+                                   cr_b = cr_b, 
+                                   start = "B_mB"))) %>%
+    unnest(trial) %>%
+    rowwise() %>%
+    arrange(cr_a, cr_b, trial) %>%
+    mutate(states = list(markov_state(mat_initial_state = mats$initial_mat,
+                                      mat_transition = mats$trans_mat, 
+                                      n = trial))) %>%
+    ungroup() %>%
+    select(-mats) %>%
+    #mutate(states = as.data.frame(states))
+    unnest(states) %>%
+    mutate(A_total = Au_mA + Au_mB + Ad_mA,
+           Au_total = Au_mA + Au_mB,
+           inst_miss = Au_total * p_A2B,
+           B_total = B_mA + B_mB,
+           Checks = (Au_mA + Ad_mA + B_mA) * cr_a + (Au_mB + B_mB) * cr_b,
+           label_cr_a = paste0("cr | a: ", cr_a),
+           label_cr_b = paste0("cr | b: ", cr_b))
+  
+}
+```
+
+
+
+## Probability of States
+
+Now this is how the probability of critical states changes over time.  
+The probability of an objective A state (regardless of checking and memory state): 
+$$P_{\text{A total}} = A1MA + A0MA + A0MB$$   
+The probability of an objective B state (regardless of memory state): 
+$$P_{\text{B total}} = BMA + BMB$$ 
+The probability of undetected A states (regardless of memory state): 
+$$P_{\text{A0 total}} = A0MA + A0MB$$  
+And lastly, the probability of misses remains: 
+$$P_{\text{miss}} = P_{A0 total} * P_{A \to B}$$  
+
+Something that is interesting to observe is that differences in check rates given memory state being A *do not matter* if the check rate given memory state being B is set to 0. In this experiment, participants *know* that the block always start with an off state (B). Because the check rate is set to 0, memory never gets updated because there are no checks - therefore, the check rate given memory state A never applies. One can also imaging the transition matrix as a set of pipes through which water is pumped, where in this analogy the diameter of the pipe is the transition probability. When $cr_b = 0$, no water can flow/no transitions can happen to a state in which $cr_a$ applies. 
+
+```{r}
+
+
+state5_ex <- xfun::cache_rds({
+  get_states5_crgrid(p_A2B = 0.1,
+                     p_B2A = 0.1, 
+                     cr_grid = data.frame(cr_a = seq(0, 1, by = 0.01),
+                                          cr_b = seq(0, 1, by = 0.01)), 
+                     N_Trials = 150)
+}, dir = "helper_files/", file = "state5_ex")
+
+
+ggplot(state5_ex %>% filter(cr_a %in% seq(0, 1, by = 0.25)) %>% filter(cr_b %in% seq(0, 1, by = 0.25)), aes(x = trial)) +
+  geom_line(aes(y = A_total, color = "A"), lwd = 2, alpha = 0.6)+
+  geom_line(aes(y = Ad_mA, color = "Ad"))+
+  geom_line(aes(y = Au_total, color = "Au"))+
+  geom_line(aes(y = B_total, color = "B"), lwd = 2, alpha = 0.6)+
+  geom_line(aes(y = inst_miss, color = "missed"), linetype = "21")+
+  coord_cartesian(xlim = c(0, 30))+
+  facet_grid(label_cr_b ~ label_cr_a)+
+  scale_color_manual(name = "State", 
+                     labels = c("A" = "A total",
+                                "Ad" = "A detected",
+                                "Au" = "A undetected",
+                                "B" = "B",
+                                "inst_miss" = "missed"),
+                     values = c("A" = "orange",
+                                "Ad" = "green",
+                                "Au" = "red",
+                                "B" = "blue",
+                                "missed" = "red"))+
+  labs(x = "Trial Number",
+       y = "Probability")+
+  theme_classic()
+
+```
+
+## Reward calculation
+
+The reward calculations remain the same as above.
+
+Because we have two states, we now work with a optimality surface. The two dots you can see here reflect the optima. The orange optimum is the optimum under the assumption that people do not check differentially dependent on their memory state, i. e., $cr_a = cr_b$. Red is the optimum for more adaptive cue checking, i. e., $cr_a \neq cr_b$.
+
+```{r}
+get_payout5 <- function(states,
+                        RT_c,
+                        RT_nc,
+                        ITI,
+                        Win,
+                        Loss,
+                        TTime){
+  
+  
+  # states <- x$states[1][[1]]
+  # RT_c = 1
+  # RT_nc= 1
+  # ITI =1
+  # Win= 1
+  # Loss =1
+  # TTime =1
+  
+  states %>%
+    filter(trial > 0) %>%
+    mutate(expected_RT = RT_nc + Checks * (RT_c - RT_nc) + ITI,
+           expected_Rew = Win - (inst_miss * Loss)) %>%
+    group_by(cr_a, cr_b) %>%
+    mutate(cum_RT = cumsum(expected_RT),
+           cum_Rew = cumsum(expected_Rew)) %>%
+    filter(cum_RT > TTime) %>%
+    slice(1) %>%
+    ungroup() %>%
+    mutate(RT_correction = cum_RT - expected_RT, # subtract current RT
+           Time_left = TTime - RT_correction, #how much time was left from previous trial to block end
+           p_Trial_completed = Time_left/expected_RT, #this is the proportion of the last trial that was completed
+           Rew_corrected = cum_Rew - ((1 - p_Trial_completed) * expected_Rew),#to correct, I am subtracting the reward associated with the incomplete portion of the trial 
+           is_max = ifelse(Rew_corrected == max(Rew_corrected), 1, 0),
+           is_max_same = ifelse(cr_a == cr_b & Rew_corrected == max(Rew_corrected[cr_a == cr_b]), 1, 0)) %>%
+    select(cr_a, cr_b, Rew_corrected, is_max, is_max_same) %>%
+    return()
+  
+}
+
+payout5 <- get_payout5(states = state5_ex, 
+                       RT_nc = 0.6, 
+                       RT_c = 1.5, 
+                       ITI = 0.1, 
+                       Win = 1, 
+                       Loss = 80, 
+                       TTime = 90) %>%
+  mutate(rel_reward = Rew_corrected/max(Rew_corrected))
+
+payout5_heat_plt <- ggplot(payout5, aes(x = cr_a, y = cr_b, fill = Rew_corrected))+
+  geom_tile()+
+  geom_abline(slope = 1, intercept = 0)+
+  geom_point(data = payout5 %>% filter(is_max_same == 1), pch = 23, fill = "orange", size = 4)+
+  geom_point(data = payout5 %>% filter(is_max == 1), pch = 23, fill = "red", size = 4)+
+  labs(x = "Check Rate | Memory A",
+       y = "Check Rate | Memory B")+
+  scale_fill_viridis(name = "Block\nReward")+
+  theme_classic()
+
+payout5_heat_plt
+```
+
+Let's turn this into a 3D plot.
+
+```{r}
+
+
+payout5_wide <- payout5 %>%
+  pivot_wider(names_from = cr_a, values_from = Rew_corrected,, id_cols = cr_b) %>%
+  column_to_rownames(var = "cr_b") %>%
+  as.matrix()
+
+x_vals <- as.numeric(colnames(payout5_wide)) # cr_a values
+y_vals <- as.numeric(rownames(payout5_wide)) # cr_b values
+
+
+surface0 <- payout5_wide
+surface0[,] <- 0
+
+# 3. Build the 3D surface plot
+fig <- plot_ly(
+  x = ~x_vals, 
+  y = ~y_vals, 
+  z = ~payout5_wide, 
+  type = "surface",
+  colorscale = "Viridis",  
+) %>%
+  add_surface(
+    x = ~x_vals,
+    y = ~y_vals,
+    z = ~surface0,
+    opacity = 0.5, # Make it semi-transparent so you can see the curve below it
+    colorscale = list(c(0, 1), c("gray", "gray")), # Flat gray color
+    showscale = FALSE, # Hide the color scale legend for the plane
+    name = "Zero Reward"
+  ) %>%
+  
+  add_trace(
+    x = payout5$cr_a[payout5$is_max == 1],
+    y = payout5$cr_b[payout5$is_max == 1],
+    z = payout5$Rew_corrected[payout5$is_max == 1],
+    type = "scatter3d",
+    mode = "markers",
+    marker = list(
+      size = 6,              
+      color = "red",          
+      symbol = "circle",     
+      line = list(color = "black", width = 1) 
+    ),
+    name = "Optimal Strategy" 
+  ) %>%
+  
+  add_trace(
+    x = payout5$cr_a[payout5$is_max_same == 1],
+    y = payout5$cr_b[payout5$is_max_same == 1],
+    z = payout5$Rew_corrected[payout5$is_max_same == 1],
+    type = "scatter3d",
+    mode = "markers",
+    marker = list(
+      size = 6,              
+      color = "red",          
+      symbol = "circle",      
+      line = list(color = "black", width = 1) 
+    ),
+    name = "Optimal Strategy\nfor same p" 
+  ) %>%
+  
+  layout(
+    title = "\nComputation: Block Rewards given Check Strategies",
+    scene = list(
+      xaxis = list(title = "Check Rate | Memory A"),
+      yaxis = list(title = "Check Rate | Memory B"),
+      zaxis = list(title = "Block Reward")
+    )
+  ) %>%
+  colorbar(title = "Block\nReward")
+
+# Display the interactive plot
+fig
+```
+
+
+As a sanity check, let's check that the diagnonal of the heatmap is the same as the simpler 3-state model. 
+
+```{r}
+
+payout5_simple <- payout5 %>% 
+  filter(cr_a == cr_b) %>%
+  mutate(rel_reward_diagonal = Rew_corrected/max(Rew_corrected))
+
+
+
+payout5_state_plt <- ggplot(payout5_simple %>% filter(cr_a == cr_b), aes(x = cr_a, y = rel_reward_diagonal))+
+  geom_line()+
+  geom_point(data = payout5_simple %>% filter(is_max_same == 1), pch = 23, size = 3)+
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))+
+  labs(x = "Check Rate", y = "Relative Reward", title = "Diagonal of 5 state model")+
+  theme_classic()
+
+
+payout3_state_plt <- payout3_state_plt +
+  labs(title = "3 State Model")
+
+cowplot::plot_grid(payout3_state_plt, payout5_state_plt)
+```
+
+
+Looks good. Now let's directly compare:
+
+```{r}
+
+payout3_simple <- payout3 %>% 
+  rename(cr_3 = cr, Rew_corrected3 = Rew_corrected) %>%
+  select(cr_3, Rew_corrected3)
+
+payout5_simple <- payout5 %>% 
+  filter(cr_a == cr_b) %>%
+  rename(cr_5 = cr_a, Rew_corrected5 = Rew_corrected) %>%
+  select(cr_5, Rew_corrected5)
+
+
+payout35_compare <- left_join(payout3_simple, payout5_simple, by = c("cr_3" = "cr_5"))
+
+ggplot(payout35_compare, aes(x = Rew_corrected3, y = Rew_corrected5))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 1)+
+  labs(x = "Reward from 3 state model",
+       y = "Reward from diagnoal of 5 state model")+
+  theme_classic()
+
+```
+
+
+
+## Comparison with simulation
+
+```{r}
+simulate2p <- function(
+    Win = 1,
+    Loss = 10,
+    RT_nc = 0.6,
+    RT_c = 1.7,
+    ITI = 0.1, 
+    TTime = 90, 
+    N_sim = 10,
+    p_A2B = 0.1,
+    p_B2A = 0.1,
+    p_initial_A = 0,
+    p_initial_B = 1,
+    p_initial_A_detected = 0,
+    cr_a = seq(0.0, 1, by = 0.05),  
+    cr_b = seq(0.0, 1, by = 0.05),
+    verbose = TRUE
+    
+){
+  
+  library(Rcpp)
+  sourceCpp("memory_loop.cpp")
+  gen_trial_seq <- readRDS("gen_trial_seq.RDS")
+  # TO DEBUG
+  # Win = 1
+  # Loss = 12
+  # RT_nc = 0.7
+  # RT_c = 1.7
+  # Win = 1
+  # Loss = 10
+  # RT_nc = 1
+  # RT_c = 1.5
+  # ITI = 0.1
+  # TTime = 90
+  # N_sim = 1000
+  # ITI = 0.1
+  # p_A2B = 0.1
+  # p_B2A = 0.1
+  # p_inital_A = 0
+  # p_initial_B = 1
+  # p_inital_A_detected = 0
+  
+  
+  
+  #Trials to simulate:
+  N_trials <- (TTime / (min(RT_nc, RT_c))) + 3 # + 3 for buffer
+  
+  
+  # Let's generate a bunch of sequences first.
+  sequences <- list()
+  
+  for (i in 1:N_sim){
+    sequences[[i]] <- data.frame(sequence = gen_trial_seq(p_A2B = p_A2B, 
+                                                          p_B2A = p_B2A, 
+                                                          N = N_trials, 
+                                                          start = sample(x = c("A", "A_detected", "B"), 
+                                                                         size = 1, 
+                                                                         prob = c(p_initial_A, p_initial_A_detected, p_initial_B)))) %>%
+      mutate(iteration = i)
+  }
+  
+  
+  sequences <- bind_rows(sequences) %>%
+    mutate(rand = runif(n()))  %>%# this will serve as the random number to determine binary checks. If you have a check rate of 0.1, then you compare 0.1 against the random number. Since getting a random number of 0.1 or less is 10 %, we can binarize that number by this statement: random_number <= cr
+    group_by(iteration) %>%
+    mutate(
+      Trial = 1:n(),
+      new_iteration = ifelse(lag(iteration, default = 0) != iteration, 1L, 0L),
+      monster_id = ifelse(sequence == "A" & lag(sequence, 1, default = "B") == "B", 1, 0),
+      monster_id = cumsum(monster_id),
+      monster_id = ifelse(sequence == "B", 0, monster_id)
+    ) %>%
+    ungroup()
+  
+  results <- list()
+  
+  if (verbose){
+    paste0("Running ", length(cr_a)*length(cr_b), " iterations")
+  }
+  
+  current_it <- 0
+  for(i_cr_a in 1:length(cr_a)){
+    
+    for(i_cr_b in 1:length(cr_b)){
+      
+      # i_cr_a <- 10
+      # i_cr_a <- 15
+      
+      current_it <- current_it + 1
+      
+      if (verbose){
+        if (current_it %% 100 == 0){
+          print(paste0("Progress: ", round((current_it/(length(cr_a) * length(cr_b)))*100, 2), "%"))
+        }
+      }
+      
+      
+      
+      result <- compute_memory_check(sequences$sequence, 
+                                     sequences$rand,
+                                     cr_a[i_cr_a], 
+                                     cr_b[i_cr_b],
+                                     sequences$new_iteration)
+      
+      
+      ########
+      
+      
+      
+      trials <- sequences %>%
+        mutate(memory = result$memory,
+               check = result$check,
+               RT = ifelse(check == 1, RT_c, RT_nc) + ITI) %>% #determine check rate based on RTs and ITIs
+        group_by(iteration) %>% 
+        mutate(Trial = 1:n(), #enumerate trials, helpful for statistics later
+               RT_cum = cumsum(RT), #cumsum of RT to help figure out at which time we have to cut off the block
+               monster_id = ifelse(sequence == "A" & lag(sequence, 1, default = "B") == "B", 1, 0), #determine the monster ID, helpful to later figure out if we checked the monster or not; default "B" because we might start with state "A" (where you need to kill the monster in the very first trial) - this is a fairly unrealistic scenario that we probably won't implement, but it's good to have that possibility built in.
+               monster_id = cumsum(monster_id),
+               monster_id = ifelse(sequence == "B", 0, monster_id)) %>%
+        group_by(iteration, monster_id) %>%
+        mutate(n_checks = cumsum(check)) %>% #this is helpful to determine whether we have checked a monster just before it turns off.
+        group_by(iteration) %>%
+        mutate(Rew = ifelse(sequence == "A" & lead(sequence) == "B" & n_checks == 0 & monster_id != 0, Win - Loss, Win), # if we missed a monster, where miss is defined as the monster turning off in the next trial.
+               Rew_cum = cumsum(Rew)) # cumulative reward.
+      
+      
+      iteration_summary <- trials %>%
+        filter(RT_cum < TTime) %>% 
+        summarize(Rew_cum = Rew_cum[n()],
+                  RT_M = mean(RT),
+                  N_trials = Trial[n()]) %>%
+        mutate(cr_a = cr_a[i_cr_a],
+               cr_b = cr_b[i_cr_b])
+      
+      trial_summary <- trials %>%
+        group_by(Trial) %>%
+        summarize(p_A = mean(sequence == "A"),
+                  p_A_detected = mean(sequence == "A_detected"),
+                  p_B = mean(sequence == "B"),
+                  Rew = mean(Rew),
+                  RT_M = mean(RT)) %>%
+        mutate(cr_a = cr_a[i_cr_a],
+               cr_b = cr_a[i_cr_b])
+      
+      results[[length(results) + 1]] <- list(iteration_summary = iteration_summary,
+                                             trial_summary = trial_summary)
+      
+    }
+  }
+  
+  return(results)
+  
+}
+
+
+simulation <- xfun::cache_rds({
+  simulate2p(RT_nc = 0.6, 
+             RT_c = 1.5, 
+             ITI = 0.1, 
+             Win = 1, 
+             Loss = 80, 
+             TTime = 90, 
+             p_initial_A = 0, 
+             p_initial_B = 1, 
+             p_initial_A_detected = 0, 
+             p_A2B = 0.1,
+             p_B2A = 0.1, 
+             N_sim = 1000,
+             cr_a = seq(0, 1, by = 0.01),
+             cr_b = seq(0, 1, by = 0.01), 
+             verbose = FALSE) 
+}, dir = "helper_files", file = "simulation")
+
+trial_summaries <- lapply(simulation, function(y){
+  y$trial_summary
+}) %>% bind_rows() %>%
+  group_by(Trial, cr_a, cr_b) %>%
+  summarize(across(c(p_A, p_A_detected, p_B), ~ mean(.x)))
+
+
+iteration_summaries <- lapply(simulation, function(y){
+  y$iteration_summary
+}) %>% bind_rows %>%
+  mutate(cr_a = round(cr_a, 2),
+         cr_b = round(cr_b, 2)) %>%
+  group_by(cr_a, cr_b) %>%
+  summarize(Rew_cum = mean(Rew_cum)) %>%
+  ungroup() %>%
+  mutate(is_max = ifelse(Rew_cum == max(Rew_cum), 1, 0),
+         is_max_same = ifelse(Rew_cum == max(Rew_cum[cr_a == cr_b]) & cr_a == cr_b, 1, 0))
+
+
+payout5_heat_simulation_plt <- ggplot(iteration_summaries, aes(x = cr_a, y = cr_b, fill = Rew_cum, group = Rew_cum))+
+  geom_tile()+
+  geom_abline(slope = 1, intercept = 0)+
+  geom_point(data = iteration_summaries %>% filter(is_max_same == 1), pch = 23, fill = "orange", size = 4)+
+  geom_point(data = iteration_summaries %>% filter(is_max == 1), pch = 23, fill = "red", size = 4)+
+  labs(x = "Check Rate | Memory A",
+       y = "Check Rate | Memory B")+
+  scale_fill_viridis(name = "Block\nReward")+
+  theme_classic()
+
+payout5_heat_plt <- payout5_heat_plt +
+  labs(title = "computation")+
+  theme(legend.position = "bottom")
+
+payout5_heat_simulation_plt <-  payout5_heat_simulation_plt +
+  labs(title = "simulation")+
+  theme(legend.position = "bottom")
+
+cowplot::plot_grid(payout5_heat_plt, payout5_heat_simulation_plt)
+
+```
+
+
+Let's compare the two heatmaps directly.
+
+```{r}
+
+computation_simple <- payout5 %>%
+  select(cr_a, cr_b, Rew_corrected) %>%
+  rename(Rew_computation = Rew_corrected)
+
+
+simulation_simple <- iteration_summaries %>%
+  select(cr_a, cr_b, Rew_cum) %>%
+  rename(Rew_simulation = Rew_cum)
+
+
+comp_sim_comparison <- left_join(computation_simple, simulation_simple)
+
+ggplot(comp_sim_comparison, aes(x = Rew_computation, y = Rew_simulation))+
+  geom_point(pch = 1)+
+  geom_abline(slope = 1, intercept = 0, linetype = "22")+
+  geom_smooth(method = "lm")+
+  labs(title = "Comparing absolute rewards between computation and simulation",
+       x = "Computed",
+       y = "Simulated")+
+  theme_classic()
+
+```
+
+
+
+
+
+

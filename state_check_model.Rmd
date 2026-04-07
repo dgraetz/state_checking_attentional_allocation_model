@@ -1497,6 +1497,8 @@ markov_state <- function(mat_initial_state,
     return()
   
 }
+
+saveRDS(markov_state, "markov_state.RDS")
 ```
 
 
@@ -1564,6 +1566,8 @@ build_mats <- function(p_A2B = 0.1,
   return(list(trans_mat = trans_mat,
               initial_mat = initial_mat))
 }
+
+saveRDS(build_mats, "build_mats.RDS")
 ```
 
 
@@ -1580,16 +1584,20 @@ Here's a figure of state transitions. It shows the probability of any check (whe
 
 
 ```{r}
+
+
+
+
 states5_over_trials <- data.frame(setup = 1) %>%
   mutate(p_A2B = 0.1, 
          p_B2A = 0.1, 
-         cr_a = list(cr_a = seq(0, 1, by = 0.05)),
-         cr_b = list(cr_b = seq(0, 1, by = 0.05)),
+         cr_a = list(cr_a = seq(0, 1, by = 0.025)),
+         cr_b = list(cr_b = seq(0, 1, by = 0.025)),
          RT_nc = 0.6,
-         RT_c = 1.7,
-         ITI = 0.1,
+         RT_c = 1.6,
+         ITI = 0.2,
          Win = 1,
-         Loss = 10,
+         Loss = 30,
          TTime = 90,
          trial = list(1:(TTime/min(c(RT_nc, RT_c))))) %>%
   unnest(trial) %>%
@@ -1672,11 +1680,20 @@ This looks beautiful! In the next step, I can assign partial RT costs (e. g., $R
 payout <- states5_over_trials %>%
   group_by(cr_a, cr_b) %>%
   filter(cum_RT > TTime) %>%
-  slice(1)
+  slice(1) %>%
+  ungroup() %>%
+  mutate(RT_correction = cum_RT - expected_RT, # subtract current RT
+         Time_left = TTime - RT_correction, #how much time was left from previous trial to block end
+         p_Trial_completed = Time_left/expected_RT, #this is the proportion of the last trial that was completed
+         Rew_corrected = cum_Rew - ((1 - p_Trial_completed) * expected_Rew)) %>% #to correct, I am subtracting the reward associated with the incomplete portion of the trial 
+  mutate(is_max = ifelse(cum_Rew == max(cum_Rew), 1, 0),
+         is_max_same = ifelse(cr_a == cr_b & cum_Rew == max(cum_Rew[cr_a == cr_b]), 1, 0))
 
 
-comp_reward_heat_plt <- ggplot(payout, aes(x = cr_a, y = cr_b, fill = cum_Rew))+
+comp_reward_heat_plt <- ggplot(payout, aes(x = cr_a, y = cr_b, fill = Rew_corrected))+
   geom_tile()+
+  geom_point(data = payout %>% filter(is_max == 1), pch = 23, fill = "red")+
+  geom_point(data = payout %>% filter(is_max_same == 1), pch = 23, fill = "red")+
   labs(title = "From Computation",
        x = "Check Rate after Checking A",
        y = "Check Rate after Checking B",
@@ -1691,9 +1708,13 @@ comp_reward_heat_plt <- ggplot(payout, aes(x = cr_a, y = cr_b, fill = cum_Rew))+
   theme_classic()
 comp_reward_heat_plt
 
+payout %>% 
+  filter(is_max == 1|is_max_same == 1) %>%
+  select(cr_a, cr_b, is_max, is_max_same) 
+
 
 payout_wide <- payout %>%
-  pivot_wider(names_from = cr_a, values_from = cum_Rew, id_cols = cr_b) %>%
+  pivot_wider(names_from = cr_a, values_from = Rew_corrected,, id_cols = cr_b) %>%
   column_to_rownames(var = "cr_b") %>%
   as.matrix()
 
@@ -1721,6 +1742,37 @@ fig <- plot_ly(
     showscale = FALSE, # Hide the color scale legend for the plane
     name = "Zero Reward"
   ) %>%
+  
+  add_trace(
+    x = payout$cr_a[payout$is_max == 1],
+    y = payout$cr_b[payout$is_max == 1],
+    z = payout$Rew_corrected[payout$is_max == 1],
+    type = "scatter3d",
+    mode = "markers",
+    marker = list(
+      size = 6,              
+      color = "red",          
+      symbol = "circle",     
+      line = list(color = "black", width = 1) 
+    ),
+    name = "Optimal Strategy" 
+  ) %>%
+  
+  add_trace(
+    x = payout$cr_a[payout$is_max_same == 1],
+    y = payout$cr_b[payout$is_max_same == 1],
+    z = payout$Rew_corrected[payout$is_max_same == 1],
+    type = "scatter3d",
+    mode = "markers",
+    marker = list(
+      size = 6,              
+      color = "red",          
+      symbol = "circle",      
+      line = list(color = "black", width = 1) 
+    ),
+    name = "Optimal Strategy\nfor same p" 
+  ) %>%
+  
   layout(
     title = "\nComputation: Block Rewards given Check Strategies",
     scene = list(

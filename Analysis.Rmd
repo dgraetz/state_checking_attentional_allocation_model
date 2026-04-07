@@ -1,0 +1,380 @@
+---
+title: "Monster Pilot"
+author:
+  - name: "Dominik Graetz"
+    affiliation: "University of Oregon"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true         # optional: adds a table of contents
+    toc_float: true
+    toc_depth: 6
+    number_sections: true
+date: "2026-03-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Reading in data
+
+```{r}
+library(tidyverse)
+library(rio)
+source("current_model.R")
+
+files <- list.files("../data/", pattern = "txt", full.names = TRUE)
+
+data <- lapply(files, function(x){
+  import(x) %>% 
+    mutate(ID = str_extract(x, "[[:digit:]]+(?=_monsters)") %>% factor(), 
+           .before = Block)
+}) %>%
+  bind_rows()
+
+data <- data %>%
+  filter(Is_practice == 0) %>%
+  filter(!is.nan(RT_task)) %>%
+  filter(Trial > 1) %>%
+  group_by(ID, Block) %>%
+  mutate(Task_rew = Correct * A_Win,
+         missed_factor = ifelse(last_trial_on_state == 1 & Detected_current_state == 0, 1, 0),
+         Monster_loss =  missed_factor * B_Loss,
+         current_reward = Task_rew - Monster_loss,
+         current_reward = cumsum(current_reward)) %>%
+  ungroup() %>%
+  mutate(ITI = ifelse(ID == 100, 0.1, ITI),
+         Placeh = ifelse(ID == 100, 0, Placeh),
+         Placeh = factor(Placeh),
+         ITI = factor(ITI),
+         B_Loss = factor(B_Loss),
+         ID = factor(ID))
+
+
+agg_ID <- data %>%
+  group_by(ID, Block, B_Loss, ITI, Placeh) %>%
+  summarize(RT_task_checked = mean(RT_task[State_checked == 1]),
+            RT_task_nc = mean(RT_task[State_checked == 0]),
+            Check = mean(State_checked),
+            empirical_reward = current_reward[n()]) %>%
+  group_by(ID, B_Loss, ITI, Placeh) %>%
+  summarize(RT_task_checked_M = mean(RT_task_checked),
+            RT_task_checked_SD= sd(RT_task_checked),
+            RT_task_nc_M = mean(RT_task_nc),
+            RT_task_nc_SD = sd(RT_task_nc),
+            Check = mean(Check),
+            abs_cost = RT_task_checked_M - RT_task_nc_M,
+            empirical_reward = mean(empirical_reward))
+```
+
+# Optimality surfaces
+
+```{r fig.width = 10, fig.height = 10, out.width = "100%"}
+library(expm)
+
+max_trials <- 90/(agg_ID$RT_task_nc_M %>% min())
+
+
+st <- xfun::cache_rds({
+  get_states(p_A2B = 0.1, p_B2A = 0.1, cr_a = seq(0, 1, by = 0.01), cr_b = seq(0, 1, by = 0.01), N_Trials = max_trials)
+}, file = "states.RDS", rerun = 0)
+
+#get_payout(states = st, RT_c = 1.5, RT_nc = .6, ITI = 1, Win = 1, Loss = 30, TTime = 90)
+
+
+agg_ID$payoff <- NA
+
+for (i in 1:nrow(agg_ID)){
+  print(i)
+  agg_ID$payoff[i] = list(get_payout(states = st, 
+                                     RT_c = agg_ID$RT_task_checked_M[i], 
+                                     RT_nc = agg_ID$RT_task_nc_M[i], 
+                                     ITI = as.numeric(as.character(agg_ID$ITI[i])), 
+                                     Win = 1, 
+                                     Loss = as.numeric(as.character(agg_ID$B_Loss[i])), 
+                                     TTime = 90)) 
+}
+
+agg_ID2 <- agg_ID %>%
+  ungroup() %>%
+  mutate(group = 1:n()) %>%
+  unnest(payoff)
+
+
+agg_ID2_by_state <- data %>%
+  group_by(ID, Block) %>%
+  mutate(check_group = cumsum(State_checked)) %>%
+  group_by(ID, Block, check_group) %>%
+  mutate(state_at_check = StateOn[1]) %>%
+  filter(check_group != 0) %>%
+  group_by(ID, Block, B_Loss, ITI, Placeh, check_group, state_at_check) %>%  
+  summarize(avg_run_length = n()) %>%
+  group_by(ID, Block, B_Loss, ITI, Placeh, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length)) %>%
+  group_by(ID, B_Loss, ITI, Placeh, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length),
+            cc = 1/avg_run_length) %>%
+  mutate(state_at_check = factor(state_at_check)) %>%
+  pivot_wider(names_from = state_at_check, values_from = cc, id_cols = c(ID, B_Loss, Placeh, ITI)) %>%
+  rename("cr_a_empirical" = `1`, "cr_b_empirical" = `0`)
+
+
+agg_ID2_by_state <- agg_ID2_by_state %>%
+  left_join(agg_ID2) %>%
+  mutate(label = paste0("ID", ID, ", Placeh", Placeh, ",\nLoss", B_Loss, ", ITI", ITI))
+
+ggplot(agg_ID2_by_state, aes(x = cr_a, y = cr_b, fill = Rew_corrected))+
+  geom_tile()+
+  geom_abline(intercept = 0, slope = 1)+
+  scale_fill_viridis_c()+
+  ggnewscale::new_scale("fill")+
+  geom_point(data = agg_ID2_by_state %>% filter(is_max == 1) %>% slice(1), aes(fill = "opt"), pch = 23)+
+  geom_point(data = agg_ID2_by_state %>% filter(is_max_same == 1), aes(x = cr_a_empirical, y = cr_b_empirical, fill = "actual"), pch = 23)+
+  geom_point(data = agg_ID2_by_state %>% filter(is_max_same == 1), aes(fill = "opt_same_cr"), pch = 23)+
+  scale_fill_manual(values = c("opt" = "red",
+                                "opt_same_cr" = "orange",
+                                "actual" = "blue"),
+                     labels = c("opt" = "optimum",
+                                "opt_same_cr" = "optimum restricted to same check rate",
+                                "actual" = "actual"))+
+  facet_wrap(~label) +
+  theme_classic()+
+  theme(legend.position = "bottom")
+```
+
+
+# How well does my model predict reward?
+
+```{r}
+
+predicted_rewards <- agg_ID2_by_state %>%
+  group_by(ID, B_Loss, Placeh, ITI) %>%
+  mutate(a_dist = abs(cr_a_empirical - cr_a),
+         b_dist = abs(cr_b_empirical - cr_b)) %>%
+  filter(a_dist == min(a_dist) & b_dist == min(b_dist))
+
+
+ggplot(predicted_rewards, aes(x = Rew_corrected, y = empirical_reward, color = ITI))+
+  geom_abline(intercept = 0, slope = 1)+
+  geom_point()+
+  labs(x = "predicted reward", 
+       y = "actual reward")+
+  coord_fixed(ratio = 1)+
+  facet_wrap(~ID)+
+  theme_classic()
+
+
+# In Loss = 2, you should not check; 
+
+# At Loss = 10
+# cr_a  cr_b is_max is_max_same
+# <dbl> <dbl>  <dbl>       <dbl>
+#   1 0.1   0.225      1           0
+#   2 0.175 0.175      0           1
+
+
+# At Loss = 30
+# cr_a  cr_b is_max is_max_same
+# <dbl> <dbl>  <dbl>       <dbl>
+#   1  0.25 0.575      1           0
+#   2  0.45 0.45       0           1
+```
+
+# All effects
+
+```{r}
+agg <- agg_ID %>%
+  group_by(B_Loss, Placeh, ITI) %>%
+  summarize(Check = mean(Check))
+  
+  
+ggplot(agg_ID, aes(x = B_Loss, y = Check, group = interaction(ID, Placeh), color = ID, linetype = Placeh))+
+  geom_line()+
+  geom_line(data = agg, aes(x = B_Loss, y = Check, group = interaction(Placeh), linetype = Placeh), inherit.aes = FALSE, lwd = 1.5)+
+  facet_wrap(~ITI)+
+  theme_classic()
+```
+
+
+# Loss x Placeholder
+
+```{r}
+agg_ID_ph_loss <- data %>%
+  group_by(ID, Placeh, B_Loss) %>%
+  summarize(Check = mean(State_checked))
+
+
+ggplot(agg_ID_ph_loss, aes(x = B_Loss, y = Check, group = interaction(ID, Placeh), color =ID, linetype = factor(Placeh)))+
+  geom_line()+
+  theme_classic()
+```
+
+
+# ITI effect
+
+```{r}
+agg_ID_iti <- data %>%
+  group_by(ID, ITI) %>%
+  summarize(Check = mean(State_checked))
+
+
+ggplot(agg_ID_iti, aes(x = ITI, y = Check, group = ID, color = ID))+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+# Trial sequence
+
+Does the state probability actually converge on what the model predicts?
+
+```{r}
+st_simple <- st %>%
+  filter(cr_a == cr_b & cr_a == 0)
+
+# Let's look at trial sequences
+
+data_states_by_trial <- data %>%
+  group_by(ID, Trial) %>%
+  summarize(p_On = mean(StateOn),
+            N = n()) %>%
+  group_by(Trial) %>%
+  summarize(p_On = mean(p_On),
+            N = sum(N)) %>%
+  mutate(p_trial_survived = N / max(N))
+
+
+ggplot(data_states_by_trial, aes(x = Trial))+
+  geom_line(aes(y = p_trial_survived, color = "survival"))+
+  geom_line(aes(y = p_On, color = "on"))+
+  geom_line(aes(y = 1-p_On, color = "off"))+
+  
+  geom_line(data = st_simple, aes(x = trial, y = A_total, color = "on"), lwd = 2, alpha = 0.2)+
+  geom_line(data = st_simple, aes(x = trial, y = B_total, color = "off"), lwd = 2, alpha = 0.2)+
+  scale_color_manual(values = c("on" = "red",
+                                "off" = "blue",
+                                "survival" = "grey"),
+                     labels = c("on" = "on",
+                                "off" = "off",
+                                "survival" = "p trials survived"),
+                     name = "State")+
+  scale_y_continuous(limits = c(0, 1))+
+  coord_cartesian(xlim = c(0, 50))+
+  labs(x = "Trial",
+       y = "p",
+       title = "Probability of States as a function of trial number")+
+  theme_classic()
+```
+
+
+# Check Rates by information obtained during last check
+
+```{r}
+check_by_state_ID <- data %>%
+  group_by(ID, Block) %>%
+  mutate(check_group = cumsum(State_checked)) %>%
+  group_by(ID, Block, check_group) %>%
+  mutate(state_at_check = StateOn[1]) %>%
+  filter(check_group != 0) %>%
+  group_by(ID, Block, B_Loss, check_group, state_at_check) %>%  
+  summarize(avg_run_length = n()) %>%
+  group_by(ID, Block, B_Loss, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length)) %>%
+  group_by(ID, B_Loss, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length),
+            cc = 1/avg_run_length) %>%
+  mutate(state_at_check = factor(state_at_check))
+
+
+check_by_state_agg <- check_by_state_ID %>%
+  group_by(B_Loss, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length),
+            cc = 1/avg_run_length)
+
+
+ggplot(check_by_state_ID, aes(x = state_at_check, y = cc, group = interaction(ID, B_Loss), color = B_Loss))+
+  geom_line()+
+  geom_line(data = check_by_state_agg, aes(group = B_Loss), lwd = 2)+
+  scale_x_discrete(labels = c("0" = "OFF STATE",
+                              "1" = "ON STATE"))+
+  labs(x = "Last time I checked I saw")+
+  theme_classic()
+
+
+
+
+check_by_state_all_factors_ID <- data %>%
+  group_by(ID, Block) %>%
+  mutate(check_group = cumsum(State_checked)) %>%
+  group_by(ID, Block, check_group) %>%
+  mutate(state_at_check = StateOn[1]) %>%
+  filter(check_group != 0) %>%
+  group_by(ID, Block, B_Loss, Placeh, ITI, check_group, state_at_check) %>%  
+  summarize(avg_run_length = n()) %>%
+  group_by(ID, Block, B_Loss, Placeh, ITI, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length)) %>%
+  group_by(ID, B_Loss, Placeh, ITI, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length),
+            cc = 1/avg_run_length) %>%
+  mutate(state_at_check = factor(state_at_check))
+
+
+check_by_state_all_factors_agg <- check_by_state_all_factors_ID %>%
+  group_by(B_Loss, ITI, Placeh, state_at_check) %>%
+  summarize(avg_run_length = mean(avg_run_length),
+            cc = 1/avg_run_length)
+
+ggplot(check_by_state_all_factors_ID, aes(x = state_at_check, y = cc, group = interaction(ID, B_Loss), color = B_Loss))+
+  geom_line()+
+  geom_line(data = check_by_state_all_factors_agg, aes(group = B_Loss), lwd = 2)+
+  scale_x_discrete(labels = c("0" = "OFF STATE",
+                              "1" = "ON STATE"))+
+  labs(x = "Last time I checked I saw",
+       title = "Expectation: Negative or flat slopes")+
+  facet_grid(Placeh~ITI)+
+  theme_classic()
+
+
+
+```
+
+# Interesting values
+
+```{r}
+
+
+states_samecr <- st %>%
+  filter(cr_a == cr_b)
+
+
+scenarios <- expand.grid(RT_c = c(1.5, 3),#seq(0.6, 1.5, by = 0.5), 
+                         RT_nc = 0.6, 
+                         ITI = 0.1, 
+                         Win = 1, 
+                         Loss = c(0, 20, 60)) %>% #seq(1, 100, by = 20)) %>%
+  mutate(group = factor(1:n())) %>%
+  rowwise() %>%
+  mutate(payout = list(get_payout(states_samecr, 
+                                  RT_c = RT_c, 
+                                  RT_nc = RT_nc, 
+                                  ITI = ITI, 
+                                  Win = Win, 
+                                  Loss = Loss, 
+                                  TTime = 90))) %>% 
+  unnest(payout) %>%
+  group_by(group) %>%
+  mutate(rel_reward = Rew_corrected/max(Rew_corrected)) %>%
+  ungroup() %>%
+  mutate(Loss = factor(Loss))
+
+ggplot(scenarios, aes(x = cr_a, y = rel_reward, group = group, color = Loss))+
+  geom_line(alpha = 1)+
+  coord_cartesian(ylim = c(0, 1))+
+  theme_classic()+
+  theme(legend.position = "none")
+
+
+```
+
+
